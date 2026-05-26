@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafetyWing Content Transcription Engine</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: #667eea;
+            border-radius: 2px;
+        }
+
+        .config-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .input-group {
+            margin-bottom: 15px;
+        }
+
+        .input-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #666;
+        }
+
+        .input-group input,
+        .input-group textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: 'Monaco', monospace;
+        }
+
+        .input-group textarea {
+            resize: vertical;
+            min-height: 60px;
+        }
+
+        .input-group input:focus,
+        .input-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .video-list {
+            background: #f8f9fa;
+            border-radius: 8px;
+            overflow: hidden;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .video-item {
+            padding: 15px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .video-item:last-child {
+            border-bottom: none;
+        }
+
+        .video-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .video-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+            word-break: break-word;
+            font-size: 13px;
+        }
+
+        .video-size {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .video-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .transcribe-btn {
+            background: #28a745;
+            padding: 8px 12px;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .transcribe-btn:hover:not(:disabled) {
+            background: #218838;
+        }
+
+        .transcribe-btn.completed {
+            background: #6c757d;
+            cursor: default;
+        }
+
+        .transcribe-btn.in-progress {
+            background: #ffc107;
+            color: #333;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .status-pending {
+            background: #e9ecef;
+            color: #666;
+        }
+
+        .status-processing {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-completed {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .progress-container {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-text {
+            font-size: 13px;
+            color: #666;
+            text-align: center;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+
+        .status-message {
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            display: none;
+            font-size: 14px;
+        }
+
+        .status-message.show {
+            display: block;
+        }
+
+        .status-message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status-message.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .controls button {
+            flex: 1;
+            min-width: 150px;
+        }
+
+        .logs {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 12px;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 4px;
+            border-left: 2px solid #666;
+            padding-left: 10px;
+        }
+
+        .log-entry.success {
+            border-left-color: #4ec9b0;
+            color: #4ec9b0;
+        }
+
+        .log-entry.error {
+            border-left-color: #f48771;
+            color: #f48771;
+        }
+
+        .log-entry.info {
+            border-left-color: #9cdcfe;
+            color: #9cdcfe;
+        }
+
+        @media (max-width: 600px) {
+            .header h1 {
+                font-size: 20px;
+            }
+
+            .content {
+                padding: 20px;
+            }
+
+            .video-item {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .video-actions {
+                width: 100%;
+            }
+
+            .transcribe-btn {
+                flex: 1;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 Content Transcription Engine</h1>
+            <p>Extract audio and transcribe SF Content Week videos</p>
+        </div>
+
+        <div class="content">
+            <!-- Configuration Section -->
+            <div class="section config-section">
+                <div class="section-title">Configuration</div>
+                
+                <div class="input-group">
+                    <label>Server URL</label>
+                    <input type="text" id="serverUrl" placeholder="http://localhost:3000 or your deployed URL" 
+                           value="http://localhost:3000">
+                </div>
+
+                <div class="input-group">
+                    <label>Google Drive Access Token</label>
+                    <textarea id="accessToken" placeholder="Paste your Google Drive access token here"></textarea>
+                    <small style="color: #999; margin-top: 5px; display: block;">
+                        Get this by signing in with Google Drive authentication
+                    </small>
+                </div>
+
+                <button onclick="saveConfig()">Save Configuration</button>
+                <div id="configStatus" style="margin-top: 10px; font-size: 12px; color: #666;"></div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="statusMessage" class="status-message"></div>
+
+            <!-- Video List Section -->
+            <div class="section">
+                <div class="section-title">Camera 1 Videos (Proxies)</div>
+                <div class="controls">
+                    <button onclick="loadVideos()" id="loadBtn">Load Videos</button>
+                    <button onclick="transcribeAll()" id="transcribeAllBtn" disabled>Transcribe All</button>
+                </div>
+                <div id="videoList" class="video-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📁</div>
+                        <p>Configure and load videos to get started</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Progress Section -->
+            <div class="section">
+                <div class="section-title">Overall Progress</div>
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">0 / 0 completed</div>
+                </div>
+            </div>
+
+            <!-- Logs Section -->
+            <div class="section">
+                <div class="section-title">Processing Logs</div>
+                <div class="logs" id="logs"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        const state = {
+            videos: [],
+            transcriptStatus: {},
+            config: {
+                serverUrl: localStorage.getItem('serverUrl') || 'http://localhost:3000',
+                accessToken: localStorage.getItem('accessToken') || ''
+            }
+        };
+
+        // Initialize
+        window.addEventListener('load', () => {
+            document.getElementById('serverUrl').value = state.config.serverUrl;
+            document.getElementById('accessToken').value = state.config.accessToken;
+            if (state.config.accessToken) {
+                document.getElementById('configStatus').textContent = '✓ Configuration loaded';
+            }
+            log('Application ready', 'success');
+        });
+
+        // Logger
+        function log(message, type = 'info') {
+            const logsDiv = document.getElementById('logs');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logsDiv.appendChild(entry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        // Status Message
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.className = `status-message show ${type}`;
+            if (type !== 'info') {
+                setTimeout(() => statusDiv.classList.remove('show'), 5000);
+            }
+        }
+
+        // Save configuration
+        function saveConfig() {
+            const serverUrl = document.getElementById('serverUrl').value.trim();
+            const accessToken = document.getElementById('accessToken').value.trim();
+
+            if (!serverUrl || !accessToken) {
+                showStatus('Please fill in all fields', 'error');
+                return;
+            }
+
+            state.config.serverUrl = serverUrl;
+            state.config.accessToken = accessToken;
+
+            localStorage.setItem('serverUrl', serverUrl);
+            localStorage.setItem('accessToken', accessToken);
+
+            document.getElementById('configStatus').textContent = '✓ Configuration saved successfully';
+            showStatus('Configuration saved', 'success');
+            log('Configuration updated', 'success');
+        }
+
+        // Load videos from server
+        async function loadVideos() {
+            if (!state.config.accessToken) {
+                showStatus('Please configure access token first', 'error');
+                return;
+            }
+
+            log('Loading videos from Proxies/Cam 1...', 'info');
+            document.getElementById('loadBtn').disabled = true;
+
+            try {
+                const response = await fetch(`${state.config.serverUrl}/api/videos`, {
+                    headers: {
+                        'Authorization': `Bearer ${state.config.accessToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                state.videos = data.videos;
+                
+                state.videos.forEach(v => {
+                    state.transcriptStatus[v.id] = 'pending';
+                });
+
+                log(`Found ${state.videos.length} video files`, 'success');
+                renderVideoList();
+                document.getElementById('transcribeAllBtn').disabled = false;
+                showStatus(`Loaded ${state.videos.length} videos`, 'success');
+
+            } catch (error) {
+                log(`Error loading videos: ${error.message}`, 'error');
+                showStatus(`Error: ${error.message}`, 'error');
+            }
+
+            document.getElementById('loadBtn').disabled = false;
+        }
+
+        // Render video list
+        function renderVideoList() {
+            const listDiv = document.getElementById('videoList');
+            listDiv.innerHTML = '';
+
+            state.videos.forEach(video => {
+                const status = state.transcriptStatus[video.id];
+                const sizeMB = (parseInt(video.size) / (1024 * 1024)).toFixed(1);
+                
+                const item = document.createElement('div');
+                item.className = 'video-item';
+                item.innerHTML = `
+                    <div class="video-info">
+                        <div class="video-name">${video.name}</div>
+                        <div class="video-size">${sizeMB} MB</div>
+                    </div>
+                    <div class="video-actions">
+                        <span class="status-badge status-${status}">${status}</span>
+                        <button class="transcribe-btn ${status}" 
+                                onclick="transcribeVideo('${video.id}', '${video.name}')"
+                                id="btn-${video.id}"
+                                ${status !== 'pending' ? 'disabled' : ''}>
+                            ${status === 'pending' ? 'Transcribe' : status === 'processing' ? '⏳' : '✓'}
+                        </button>
+                    </div>
+                `;
+                listDiv.appendChild(item);
+            });
+        }
+
+        // Transcribe single video
+        async function transcribeVideo(videoId, videoName) {
+            if (state.transcriptStatus[videoId] !== 'pending') return;
+
+            state.transcriptStatus[videoId] = 'processing';
+            updateVideoUI(videoId);
+
+            try {
+                log(`Starting transcription for: ${videoName}`, 'info');
+
+                const response = await fetch(`${state.config.serverUrl}/api/transcribe`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${state.config.accessToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        videoId: videoId,
+                        videoName: videoName
+                    })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || `Server error: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                log(`Transcript saved: ${data.transcriptName}`, 'success');
+
+                state.transcriptStatus[videoId] = 'completed';
+                updateVideoUI(videoId);
+                showStatus(`✓ Transcribed: ${videoName}`, 'success');
+
+            } catch (error) {
+                log(`Error: ${error.message}`, 'error');
+                state.transcriptStatus[videoId] = 'error';
+                updateVideoUI(videoId);
+                showStatus(`Error transcribing ${videoName}`, 'error');
+            }
+
+            updateProgress();
+        }
+
+        // Update video UI
+        function updateVideoUI(videoId) {
+            const btn = document.getElementById(`btn-${videoId}`);
+            const status = state.transcriptStatus[videoId];
+            
+            if (btn) {
+                btn.className = `transcribe-btn ${status}`;
+                btn.disabled = status !== 'pending';
+                btn.textContent = status === 'pending' ? 'Transcribe' : 
+                                 status === 'processing' ? '⏳' : '✓';
+            }
+        }
+
+        // Transcribe all videos
+        async function transcribeAll() {
+            const pending = state.videos.filter(v => state.transcriptStatus[v.id] === 'pending');
+            
+            if (pending.length === 0) {
+                showStatus('All videos already processed', 'info');
+                return;
+            }
+
+            log(`Starting batch transcription of ${pending.length} videos`, 'info');
+            
+            for (const video of pending) {
+                await transcribeVideo(video.id, video.name);
+                // Small delay between requests
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            log('Batch transcription complete!', 'success');
+            showStatus('All transcriptions complete!', 'success');
+        }
+
+        // Update progress
+        function updateProgress() {
+            const total = state.videos.length;
+            const completed = state.videos.filter(v => state.transcriptStatus[v.id] === 'completed').length;
+            const percentage = total > 0 ? (completed / total) * 100 : 0;
+
+            document.getElementById('progressFill').style.width = `${percentage}%`;
+            document.getElementById('progressText').textContent = `${completed} / ${total} completed`;
+        }
+    </script>
+</body>
+</html>
