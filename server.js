@@ -14,7 +14,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configuration
 const CONFIG = {
   WHISPER_API_KEY: process.env.WHISPER_API_KEY || 'lGGxKRx4IXnDNIVamkBskbBAyo39LtG6',
   DRIVE_FOLDER_ID: '1PYaVpIoaaszLaM-T-sE73SI4GI7w_Q45',
@@ -22,49 +21,43 @@ const CONFIG = {
   TEMP_DIR: path.join(__dirname, 'temp')
 };
 
-// Ensure temp directory exists
 if (!fs.existsSync(CONFIG.TEMP_DIR)) {
   fs.mkdirSync(CONFIG.TEMP_DIR, { recursive: true });
 }
 
-// Initialize Google Drive API
 const drive = google.drive('v3');
 
-// Middleware to verify Google token
+// Middleware to verify Google token - ACCEPTS TOKEN FROM URL OR HEADER
 async function verifyGoogleToken(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
+  let token = req.headers.authorization?.split(' ')[1];
   
   if (!token) {
-    return res.status(401).json({ error: 'No authorization token' });
+    token = req.query.token;
+  }
+  
+  if (!token) {
+    return res.status(401).json({ error: 'No authorization token. Use ?token=YOUR_TOKEN in URL' });
   }
 
-  try {
-    req.googleAuth = { accessToken: token };
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
-  }
+  req.googleAuth = { accessToken: token };
+  next();
 }
 
-// Helper: List videos from Camera 1 in Proxies folder
 app.get('/api/videos', verifyGoogleToken, async (req, res) => {
   try {
     const authClient = new google.auth.OAuth2();
     authClient.setCredentials({ access_token: req.googleAuth.accessToken });
 
-    // Get Proxies folder
     let proxiesFolderId = await getFolderIdByName(authClient, CONFIG.DRIVE_FOLDER_ID, 'Proxies');
     if (!proxiesFolderId) {
       return res.status(404).json({ error: 'Proxies folder not found' });
     }
 
-    // Get Cam 1 folder
     let cam1FolderId = await getFolderIdByName(authClient, proxiesFolderId, 'Cam 1');
     if (!cam1FolderId) {
       return res.status(404).json({ error: 'Cam 1 folder not found' });
     }
 
-    // List mp4 files
     const videos = await listMp4Files(authClient, cam1FolderId);
     res.json({ videos });
 
@@ -74,7 +67,6 @@ app.get('/api/videos', verifyGoogleToken, async (req, res) => {
   }
 });
 
-// Helper: Get folder ID by name
 async function getFolderIdByName(authClient, parentFolderId, folderName) {
   try {
     const response = await drive.files.list({
@@ -92,7 +84,6 @@ async function getFolderIdByName(authClient, parentFolderId, folderName) {
   }
 }
 
-// Helper: List mp4 files
 async function listMp4Files(authClient, folderId) {
   try {
     const response = await drive.files.list({
@@ -111,7 +102,6 @@ async function listMp4Files(authClient, folderId) {
   }
 }
 
-// Main transcription endpoint
 app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
   const { videoId, videoName } = req.body;
 
@@ -123,53 +113,40 @@ app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
     const authClient = new google.auth.OAuth2();
     authClient.setCredentials({ access_token: req.googleAuth.accessToken });
 
-    // Step 1: Download video from Drive
     console.log(`[${videoName}] Starting download...`);
     const videoPath = path.join(CONFIG.TEMP_DIR, `${Date.now()}_${videoName}`);
     await downloadFile(authClient, videoId, videoPath);
     console.log(`[${videoName}] Download complete`);
 
-    // Step 2: Extract audio
     console.log(`[${videoName}] Extracting audio...`);
     const audioPath = videoPath.replace(/\.[^.]+$/, '.wav');
     await extractAudio(videoPath, audioPath);
     console.log(`[${videoName}] Audio extracted`);
 
-    // Step 3: Transcribe with Whisper
     console.log(`[${videoName}] Sending to Whisper...`);
     const transcript = await transcribeWithWhisper(audioPath);
     console.log(`[${videoName}] Transcription complete`);
 
-    // Step 4: Save transcript to Drive
     console.log(`[${videoName}] Saving to Drive...`);
     const transcriptName = videoName.replace('.mp4', '.json');
     await saveTranscriptToDrive(authClient, transcript, transcriptName);
     console.log(`[${videoName}] Saved!`);
 
-    // Step 5: Clean up temp files
     try {
       fs.unlinkSync(videoPath);
       fs.unlinkSync(audioPath);
     } catch (e) {
-      console.log(`Warning: Could not delete temp files: ${e.message}`);
+      console.log(`Warning: Could not delete temp files`);
     }
 
     res.json({ success: true, transcriptName });
 
   } catch (error) {
     console.error(`Error transcribing ${videoName}:`, error);
-    
-    // Clean up on error
-    try {
-      if (req.videoPath) fs.unlinkSync(req.videoPath);
-      if (req.audioPath) fs.unlinkSync(req.audioPath);
-    } catch (e) {}
-
     res.status(500).json({ error: error.message });
   }
 });
 
-// Helper: Download file from Drive
 async function downloadFile(authClient, fileId, filePath) {
   return new Promise((resolve, reject) => {
     const dest = fs.createWriteStream(filePath);
@@ -197,16 +174,14 @@ async function downloadFile(authClient, fileId, filePath) {
   });
 }
 
-// Helper: Extract audio from video using FFmpeg
 async function extractAudio(videoPath, audioPath) {
   return new Promise((resolve, reject) => {
     try {
-      // FFmpeg command to extract audio
       const command = `ffmpeg -i "${videoPath}" -q:a 0 -map a "${audioPath}" -y`;
       
       execSync(command, { 
         stdio: 'pipe',
-        timeout: 600000 // 10 minute timeout
+        timeout: 600000
       });
       
       resolve();
@@ -216,7 +191,6 @@ async function extractAudio(videoPath, audioPath) {
   });
 }
 
-// Helper: Transcribe with Whisper API
 async function transcribeWithWhisper(audioPath) {
   try {
     const formData = new FormData();
@@ -232,7 +206,7 @@ async function transcribeWithWhisper(audioPath) {
           ...formData.getHeaders(),
           'Authorization': `Bearer ${CONFIG.WHISPER_API_KEY}`
         },
-        timeout: 600000 // 10 minute timeout
+        timeout: 600000
       }
     );
 
@@ -242,10 +216,8 @@ async function transcribeWithWhisper(audioPath) {
   }
 }
 
-// Helper: Save transcript to Drive
 async function saveTranscriptToDrive(authClient, transcript, fileName) {
   try {
-    // Get or create Transcripts folder
     let transcriptsFolderId = await getFolderIdByName(authClient, CONFIG.DRIVE_FOLDER_ID, 'Transcripts');
     
     if (!transcriptsFolderId) {
@@ -262,7 +234,6 @@ async function saveTranscriptToDrive(authClient, transcript, fileName) {
       transcriptsFolderId = createResponse.data.id;
     }
 
-    // Create the transcript JSON file in memory
     const transcriptContent = JSON.stringify(transcript, null, 2);
     
     const media = {
@@ -270,7 +241,6 @@ async function saveTranscriptToDrive(authClient, transcript, fileName) {
       body: transcriptContent
     };
 
-    // Upload to Drive
     const uploadResponse = await drive.files.create({
       auth: authClient,
       resource: {
@@ -284,22 +254,19 @@ async function saveTranscriptToDrive(authClient, transcript, fileName) {
 
     return uploadResponse.data.id;
   } catch (error) {
-    throw new Error(`Failed to save transcript to Drive: ${error.message}`);
+    throw new Error(`Failed to save transcript: ${error.message}`);
   }
 }
 
-// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Error handling
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ error: err.message });
 });
 
-// Start server
 const PORT = CONFIG.PORT;
 app.listen(PORT, () => {
   console.log(`🎬 SafetyWing Transcription Server running on port ${PORT}`);
