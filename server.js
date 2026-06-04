@@ -93,7 +93,7 @@ app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
     authClient.setCredentials({ access_token: req.googleAuth.accessToken });
     const videoPath = path.join(CONFIG.TEMP_DIR, `${Date.now()}_${videoName}`);
     await downloadFile(authClient, videoId, videoPath);
-    const audioPath = videoPath.replace(/\.[^.]+$/, '.wav');
+    const audioPath = videoPath.replace(/\.[^.]+$/, '.mp3');
     await extractAudio(videoPath, audioPath);
     const transcript = await transcribeWithWhisper(audioPath);
     const transcriptName = videoName.replace('.mp4', '.json');
@@ -118,7 +118,9 @@ async function downloadFile(authClient, fileId, filePath) {
 async function extractAudio(videoPath, audioPath) {
   return new Promise((resolve, reject) => {
     try {
-      execSync(`ffmpeg -i "${videoPath}" -q:a 0 -map a "${audioPath}" -y`, { stdio: 'pipe', timeout: 600000 });
+      // Compressed mono MP3 at 16kHz/32kbps — well under Whisper's 25MB limit (~14MB/hour)
+      const command = `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -ac 1 -ar 16000 -b:a 32k "${audioPath}" -y`;
+      execSync(command, { stdio: 'pipe', timeout: 600000 });
       resolve();
     } catch (error) { reject(new Error(`FFmpeg error: ${error.message}`)); }
   });
@@ -136,7 +138,6 @@ async function transcribeWithWhisper(audioPath) {
   return response.data;
 }
 
-// Save to user's own My Drive to avoid shared folder permission issues
 async function saveTranscriptToDrive(authClient, transcript, fileName) {
   try {
     let transcriptsFolderId = await getMyDriveFolderByName(authClient, 'SafetyWing Transcripts');
