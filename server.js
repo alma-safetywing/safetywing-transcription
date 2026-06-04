@@ -99,7 +99,7 @@ app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
     const transcriptName = videoName.replace('.mp4', '.json');
     await saveTranscriptToDrive(authClient, transcript, transcriptName);
     try { fs.unlinkSync(videoPath); fs.unlinkSync(audioPath); } catch (e) {}
-    res.json({ success: true, transcriptName });
+    res.json({ success: true, transcriptName, title: transcript.title });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -132,14 +132,12 @@ async function transcribeWithAssemblyAI(audioPath) {
   const audioData = fs.readFileSync(audioPath);
   const uploadRes = await axios.post('https://api.assemblyai.com/v2/upload', audioData, {
     headers: { ...headers, 'content-type': 'application/octet-stream' },
-    timeout: 600000,
-    maxBodyLength: Infinity
+    timeout: 600000, maxBodyLength: Infinity
   });
-  const uploadUrl = uploadRes.data.upload_url;
 
   console.log('Submitting transcription job with speaker diarization...');
   const submitRes = await axios.post('https://api.assemblyai.com/v2/transcript', {
-    audio_url: uploadUrl,
+    audio_url: uploadRes.data.upload_url,
     speaker_labels: true
   }, { headers });
   const transcriptId = submitRes.data.id;
@@ -148,24 +146,62 @@ async function transcribeWithAssemblyAI(audioPath) {
   for (let i = 0; i < 240; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const poll = await axios.get(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, { headers });
-    const status = poll.data.status;
+    const { status } = poll.data;
     console.log(`Status: ${status}`);
-    if (status === 'completed') return formatSpeakerTranscript(poll.data);
+    if (status === 'completed') {
+      const enrichment = await enrichWithLeMUR(transcriptId, headers);
+      return buildOutput(poll.data, enrichment);
+    }
     if (status === 'error') throw new Error(`AssemblyAI error: ${poll.data.error}`);
   }
   throw new Error('Transcription timed out after 20 minutes');
 }
 
-function formatSpeakerTranscript(data) {
-  if (!data.utterances || data.utterances.length === 0) {
-    return [{ speaker: 'Speaker 1', text: data.text }];
+async function enrichWithLeMUR(transcriptId, headers) {
+  try {
+    console.log('Running LeMUR enrichment (title + speaker names)...');
+    const [titleRes, namesRes] = await Promise.all([
+      axios.post('https://api.assemblyai.com/lemur/v3/task', {
+        transcript_ids: [transcriptId],
+        prompt: 'Generate a short descriptive title for this conversation that captures who is speaking and the main topic (e.g. "Sarah on why she founded SafetyWing"). Respond with ONLY the title, no quotes or explanation.',
+        final_model: 'anthropic/claude-3-haiku'
+      }, { headers, timeout: 60000 }),
+      axios.post('https://api.assemblyai.com/lemur/v3/task', {
+        transcript_ids: [transcriptId],
+        prompt: 'Do any speakers explicitly introduce themselves by name? Speaker labels are single letters: A, B, C, etc. If yes, return ONLY a valid JSON object like {"A": "Sarah", "B": "John"}. If nobody introduces themselves, return ONLY {}.',
+        final_model: 'anthropic/claude-3-haiku'
+      }, { headers, timeout: 60000 })
+    ]);
+
+    const title = titleRes.data.response?.trim() || '';
+    let speakerNames = {};
+    try {
+      const raw = namesRes.data.response?.trim() || '{}';
+      const match = raw.match(/\{[\s\S]*?\}/);
+      if (match) speakerNames = JSON.parse(match[0]);
+    } catch (e) {}
+
+    console.log(`Title: "${title}", Speaker names:`, speakerNames);
+    return { title, speakerNames };
+  } catch (e) {
+    console.log('LeMUR enrichment skipped (non-critical):', e.message);
+    return { title: '', speakerNames: {} };
   }
-  const speakerMap = {};
-  let speakerCount = 1;
-  return data.utterances.map(u => {
-    if (!speakerMap[u.speaker]) speakerMap[u.speaker] = `Speaker ${speakerCount++}`;
-    return { speaker: speakerMap[u.speaker], text: u.text, start_ms: u.start, end_ms: u.end };
+}
+
+function buildOutput(data, { title, speakerNames }) {
+  if (!data.utterances || data.utterances.length === 0) {
+    return { title, speakers: {}, transcript: [{ speaker: 'Speaker 1', text: data.text }] };
+  }
+  const labelMap = {};
+  let count = 1;
+  const transcript = data.utterances.map(u => {
+    if (!labelMap[u.speaker]) {
+      labelMap[u.speaker] = speakerNames[u.speaker] || `Speaker ${count++}`;
+    }
+    return { speaker: labelMap[u.speaker], text: u.text, start_ms: u.start, end_ms: u.end };
   });
+  return { title, speakers: labelMap, transcript };
 }
 
 async function saveTranscriptToDrive(authClient, transcript, fileName) {
