@@ -96,10 +96,14 @@ app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
     const audioPath = videoPath.replace(/\.[^.]+$/, '.mp3');
     await extractAudio(videoPath, audioPath);
     const transcript = await transcribeWithAssemblyAI(audioPath);
-    const transcriptName = videoName.replace('.mp4', '.json');
+    // Use descriptive title as filename if available
+    const safeTitle = transcript.title
+      ? transcript.title.replace(/[^a-z0-9\s\-]/gi, '').trim().substring(0, 80)
+      : null;
+    const transcriptName = safeTitle ? `${safeTitle}.json` : videoName.replace('.mp4', '.json');
     await saveTranscriptToDrive(authClient, transcript, transcriptName);
     try { fs.unlinkSync(videoPath); fs.unlinkSync(audioPath); } catch (e) {}
-    res.json({ success: true, transcriptName, title: transcript.title });
+    res.json({ success: true, transcriptName });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -159,17 +163,17 @@ async function transcribeWithAssemblyAI(audioPath) {
 
 async function enrichWithLeMUR(transcriptId, headers) {
   try {
-    console.log('Running LeMUR enrichment (title + speaker names)...');
+    console.log('Running LeMUR enrichment...');
     const [titleRes, namesRes] = await Promise.all([
       axios.post('https://api.assemblyai.com/lemur/v3/task', {
         transcript_ids: [transcriptId],
-        prompt: 'Generate a short descriptive title for this conversation that captures who is speaking and the main topic (e.g. "Sarah on why she founded SafetyWing"). Respond with ONLY the title, no quotes or explanation.',
-        final_model: 'anthropic/claude-3-haiku'
+        prompt: 'Generate a short descriptive title for this conversation capturing who is speaking and the main topic (e.g. "Sarah on why she founded SafetyWing"). Respond with ONLY the title, nothing else.',
+        final_model: 'default'
       }, { headers, timeout: 60000 }),
       axios.post('https://api.assemblyai.com/lemur/v3/task', {
         transcript_ids: [transcriptId],
-        prompt: 'Do any speakers explicitly introduce themselves by name? Speaker labels are single letters: A, B, C, etc. If yes, return ONLY a valid JSON object like {"A": "Sarah", "B": "John"}. If nobody introduces themselves, return ONLY {}.',
-        final_model: 'anthropic/claude-3-haiku'
+        prompt: 'List every speaker who introduces themselves by name. Speaker labels are single letters: A, B, C etc. Return ONLY a JSON object mapping each letter to the name, e.g. {"A": "Sarah", "B": "John"}. If nobody introduces themselves, return ONLY {}. No explanation.',
+        final_model: 'default'
       }, { headers, timeout: 60000 })
     ]);
 
@@ -177,27 +181,52 @@ async function enrichWithLeMUR(transcriptId, headers) {
     let speakerNames = {};
     try {
       const raw = namesRes.data.response?.trim() || '{}';
-      const match = raw.match(/\{[\s\S]*?\}/);
+      const match = raw.match(/\{[^{}]*\}/);
       if (match) speakerNames = JSON.parse(match[0]);
-    } catch (e) {}
+    } catch (e) { console.log('Speaker name parse error:', e.message); }
 
-    console.log(`Title: "${title}", Speaker names:`, speakerNames);
+    console.log(`LeMUR title: "${title}", names:`, speakerNames);
     return { title, speakerNames };
   } catch (e) {
-    console.log('LeMUR enrichment skipped (non-critical):', e.message);
+    console.log('LeMUR skipped:', e.response?.data || e.message);
     return { title: '', speakerNames: {} };
   }
+}
+
+// Regex fallback: scan utterances for self-introductions like "I'm Sarah", "My name is John"
+function detectNamesFromText(utterances) {
+  const found = {};
+  const patterns = [
+    /\bI'?m\s+([A-Z][a-z]+)\b/,
+    /\bmy name is\s+([A-Z][a-z]+)\b/i,
+    /\bI am\s+([A-Z][a-z]+)\b/,
+    /\bthis is\s+([A-Z][a-z]+)\b/i,
+    /\bcall me\s+([A-Z][a-z]+)\b/i,
+  ];
+  for (const u of utterances.slice(0, 30)) {
+    if (found[u.speaker]) continue;
+    for (const p of patterns) {
+      const m = u.text.match(p);
+      if (m?.[1]) { found[u.speaker] = m[1]; break; }
+    }
+  }
+  return found;
 }
 
 function buildOutput(data, { title, speakerNames }) {
   if (!data.utterances || data.utterances.length === 0) {
     return { title, speakers: {}, transcript: [{ speaker: 'Speaker 1', text: data.text }] };
   }
+  // Merge LeMUR names with regex-detected names (LeMUR takes priority)
+  const regexNames = detectNamesFromText(data.utterances);
+  const mergedNames = { ...regexNames, ...speakerNames };
+  console.log('Merged speaker names:', mergedNames);
+
   const labelMap = {};
   let count = 1;
   const transcript = data.utterances.map(u => {
     if (!labelMap[u.speaker]) {
-      labelMap[u.speaker] = speakerNames[u.speaker] || `Speaker ${count++}`;
+      labelMap[u.speaker] = mergedNames[u.speaker] || `Speaker ${count++}`;
     }
     return { speaker: labelMap[u.speaker], text: u.text, start_ms: u.start, end_ms: u.end };
   });
