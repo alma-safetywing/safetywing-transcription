@@ -471,20 +471,32 @@ app.post('/api/search', async (req, res) => {
 
     if (error) throw new Error(error.message);
 
-    // 4. Format results
-    const results = (data || []).map(r => ({
-      id:           r.id,
-      video_id:     r.video_id,
-      speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
-      text:         r.text,
-      start_ms:     r.start_ms,
-      end_ms:       r.end_ms,
-      duration_ms:  r.duration_ms,
-      chunk_type:   r.chunk_type,
-      similarity:   Math.round(r.similarity * 100),
-      start_fmt:    msToTimestamp(r.start_ms),
-      end_fmt:      msToTimestamp(r.end_ms),
-    }));
+    // 4. Fetch video titles for results
+    const videoIds = [...new Set((data || []).map(r => r.video_id))];
+    const { data: videoRows } = await supabase
+      .from('videos')
+      .select('id, title, file_name')
+      .in('id', videoIds);
+    const videoMap = Object.fromEntries((videoRows || []).map(v => [v.id, v]));
+
+    // 5. Format results
+    const results = (data || []).map(r => {
+      const video = videoMap[r.video_id] || {};
+      return {
+        id:           r.id,
+        video_id:     r.video_id,
+        video_title:  video.title || video.file_name || r.video_id,
+        speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
+        text:         r.text,
+        start_ms:     r.start_ms,
+        end_ms:       r.end_ms,
+        duration_ms:  r.duration_ms,
+        chunk_type:   r.chunk_type,
+        similarity:   Math.round(r.similarity * 100),
+        start_fmt:    msToTimestamp(r.start_ms),
+        end_fmt:      msToTimestamp(r.end_ms),
+      };
+    });
 
     res.json({ results });
   } catch (err) {
@@ -501,6 +513,11 @@ function msToTimestamp(ms) {
   if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
   return `${m}:${String(s).padStart(2,'0')}`;
 }
+
+// Explicit root route — serves the search UI
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
