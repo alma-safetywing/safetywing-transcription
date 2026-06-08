@@ -7,15 +7,16 @@ const path = require('path');
 const { execSync } = require('child_process');
 const cors = require('cors');
 const dotenv = require('dotenv');
-
 dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ─── Configuration ────────────────────────────────────────────────────────────
 const CONFIG = {
   ASSEMBLYAI_API_KEY: process.env.ASSEMBLYAI_API_KEY || '76ee7730d1d54c17a49c924f1137122e',
+  OPENAI_API_KEY: process.env.WHISPER_API_KEY || process.env.OPENAI_API_KEY || '',
   DRIVE_FOLDER_ID: '1PYaVpIoaaszLaM-T-sE73SI4GI7w_Q45',
   PORT: process.env.PORT || 3000,
   TEMP_DIR: path.join(__dirname, 'temp')
@@ -25,49 +26,106 @@ if (!fs.existsSync(CONFIG.TEMP_DIR)) {
   fs.mkdirSync(CONFIG.TEMP_DIR, { recursive: true });
 }
 
+// ─── Google Drive client ──────────────────────────────────────────────────────
 const drive = google.drive('v3');
 
-async function verifyGoogleToken(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No authorization token' });
-  try { req.googleAuth = { accessToken: token }; next(); }
-  catch (error) { res.status(401).json({ error: 'Invalid token' }); }
+// ─── Service account auth (preferred — no token expiry) ───────────────────────
+// Set GOOGLE_SERVICE_ACCOUNT_JSON in Render env vars to enable this.
+// When set, the frontend no longer needs to paste a Google token.
+// Falls back to per-request OAuth tokens if the env var is not set.
+let serviceAccountAuth = null;
+if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+  try {
+    const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    serviceAccountAuth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    console.log('✓ Service account auth initialized');
+  } catch (e) {
+    console.error('✗ Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON:', e.message);
+  }
 }
 
+// Returns the right auth client for the current request:
+//   - service account (if configured), or
+//   - OAuth2 client built from the token the frontend passed
+async function getAuthClient(req) {
+  if (serviceAccountAuth) {
+    return await serviceAccountAuth.getClient();
+  }
+  const client = new google.auth.OAuth2();
+  client.setCredentials({ access_token: req.googleAuth.accessToken });
+  return client;
+}
+
+// ─── Auth middleware ──────────────────────────────────────────────────────────
+// When service account is configured, no token is required from the frontend.
+async function verifyGoogleToken(req, res, next) {
+  if (serviceAccountAuth) {
+    req.useServiceAccount = true;
+    return next();
+  }
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ error: 'No authorization token' });
+  }
+  req.googleAuth = { accessToken: token };
+  next();
+}
+
+// ─── List videos endpoint ─────────────────────────────────────────────────────
 app.get('/api/videos', verifyGoogleToken, async (req, res) => {
   try {
-    const authClient = new google.auth.OAuth2();
-    authClient.setCredentials({ access_token: req.googleAuth.accessToken });
+    const authClient = await getAuthClient(req);
+
     let proxiesFolderId = await getFolderIdByName(authClient, CONFIG.DRIVE_FOLDER_ID, 'Proxies');
-    if (!proxiesFolderId) return res.status(404).json({ error: 'Proxies folder not found inside folder ID: ' + CONFIG.DRIVE_FOLDER_ID });
+    if (!proxiesFolderId) {
+      return res.status(404).json({ error: 'Proxies folder not found inside folder ID: ' + CONFIG.DRIVE_FOLDER_ID });
+    }
+
     const dayFolders = await listSubfolders(authClient, proxiesFolderId);
     console.log(`Found ${dayFolders.length} day folders:`, dayFolders.map(f => f.name));
+
     const allVideos = [];
     for (const dayFolder of dayFolders) {
       const cam1Id = await getCam1FolderId(authClient, dayFolder.id);
-      if (!cam1Id) { console.log(`No Cam 1 in ${dayFolder.name}, skipping`); continue; }
+      if (!cam1Id) {
+        console.log(`No Cam 1 folder in ${dayFolder.name}, skipping`);
+        continue;
+      }
       const videos = await listMp4Files(authClient, cam1Id);
       videos.forEach(v => v.day = dayFolder.name);
       allVideos.push(...videos);
     }
-    console.log(`Total videos found: ${allVideos.length}`);
+
     res.json({ videos: allVideos });
   } catch (error) {
+    console.error('Error listing videos:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ─── Drive helpers ────────────────────────────────────────────────────────────
 async function getFolderIdByName(authClient, parentFolderId, folderName) {
-  const response = await drive.files.list({
-    auth: authClient,
-    q: `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-    spaces: 'drive', pageSize: 1, fields: 'files(id,name)',
-    supportsAllDrives: true, includeItemsFromAllDrives: true
-  });
-  return response.data.files?.[0]?.id;
+  try {
+    const response = await drive.files.list({
+      auth: authClient,
+      q: `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      spaces: 'drive',
+      pageSize: 1,
+      fields: 'files(id,name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+    return response.data.files?.[0]?.id;
+  } catch (error) {
+    console.error('Error getting folder ID:', error);
+    throw error;
+  }
 }
 
-// Uses 'contains' to handle emoji variants like "Cam 1🏳️"
+// Uses 'contains' so "Cam 1🏳️" and similar emoji variants all match
 async function getCam1FolderId(authClient, parentFolderId) {
   const response = await drive.files.list({
     auth: authClient,
@@ -81,119 +139,248 @@ async function getCam1FolderId(authClient, parentFolderId) {
 }
 
 async function listSubfolders(authClient, parentFolderId) {
-  const response = await drive.files.list({
-    auth: authClient,
-    q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-    spaces: 'drive', pageSize: 100, fields: 'files(id,name)', orderBy: 'name',
-    supportsAllDrives: true, includeItemsFromAllDrives: true
-  });
-  return response.data.files || [];
+  try {
+    const response = await drive.files.list({
+      auth: authClient,
+      q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      spaces: 'drive',
+      pageSize: 100,
+      fields: 'files(id,name)',
+      orderBy: 'name',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+    return response.data.files || [];
+  } catch (error) {
+    console.error('Error listing subfolders:', error);
+    throw error;
+  }
 }
 
 async function listMp4Files(authClient, folderId) {
-  const response = await drive.files.list({
-    auth: authClient,
-    q: `'${folderId}' in parents and mimeType='video/mp4' and trashed=false`,
-    spaces: 'drive', pageSize: 1000, fields: 'files(id,name,size,mimeType)', orderBy: 'name',
-    supportsAllDrives: true, includeItemsFromAllDrives: true
-  });
-  return response.data.files || [];
+  try {
+    const response = await drive.files.list({
+      auth: authClient,
+      q: `'${folderId}' in parents and mimeType='video/mp4' and trashed=false`,
+      spaces: 'drive',
+      pageSize: 1000,
+      fields: 'files(id,name,size,mimeType)',
+      orderBy: 'name',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+    return response.data.files || [];
+  } catch (error) {
+    console.error('Error listing files:', error);
+    throw error;
+  }
 }
 
+// ─── Transcription endpoint ───────────────────────────────────────────────────
 app.post('/api/transcribe', verifyGoogleToken, async (req, res) => {
   const { videoId, videoName } = req.body;
-  if (!videoId || !videoName) return res.status(400).json({ error: 'videoId and videoName required' });
+  if (!videoId || !videoName) {
+    return res.status(400).json({ error: 'videoId and videoName required' });
+  }
+
   try {
-    const authClient = new google.auth.OAuth2();
-    authClient.setCredentials({ access_token: req.googleAuth.accessToken });
+    const authClient = await getAuthClient(req);
+
+    console.log(`[${videoName}] Starting download...`);
     const videoPath = path.join(CONFIG.TEMP_DIR, `${Date.now()}_${videoName}`);
     await downloadFile(authClient, videoId, videoPath);
+    console.log(`[${videoName}] Download complete`);
+
+    console.log(`[${videoName}] Extracting audio...`);
     const audioPath = videoPath.replace(/\.[^.]+$/, '.mp3');
     await extractAudio(videoPath, audioPath);
+    console.log(`[${videoName}] Audio extracted`);
+
+    console.log(`[${videoName}] Sending to AssemblyAI...`);
     const transcript = await transcribeWithAssemblyAI(audioPath);
-    const transcriptName = videoName.replace('.mp4', '.json');
+    console.log(`[${videoName}] Transcription complete`);
+
+    console.log(`[${videoName}] Saving to Drive...`);
+    const safeTitle = transcript.title
+      ? transcript.title.replace(/[^a-z0-9\s\-]/gi, '').trim().substring(0, 80)
+      : null;
+    const transcriptName = safeTitle ? `${safeTitle}.json` : videoName.replace('.mp4', '.json');
     await saveTranscriptToDrive(authClient, transcript, transcriptName);
-    try { fs.unlinkSync(videoPath); fs.unlinkSync(audioPath); } catch (e) {}
+    console.log(`[${videoName}] Saved as "${transcriptName}"!`);
+
+    try {
+      fs.unlinkSync(videoPath);
+      fs.unlinkSync(audioPath);
+    } catch (e) {
+      console.log(`Warning: Could not delete temp files: ${e.message}`);
+    }
+
     res.json({ success: true, transcriptName });
   } catch (error) {
+    console.error(`Error transcribing ${videoName}:`, error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// ─── Download file from Drive ─────────────────────────────────────────────────
 async function downloadFile(authClient, fileId, filePath) {
   return new Promise((resolve, reject) => {
     const dest = fs.createWriteStream(filePath);
-    drive.files.get({ auth: authClient, fileId, alt: 'media', supportsAllDrives: true }, { responseType: 'stream' }, (err, response) => {
-      if (err) { dest.destroy(); return reject(err); }
-      response.data.on('error', reject).pipe(dest).on('finish', resolve).on('error', reject);
-    });
+    drive.files.get(
+      { auth: authClient, fileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'stream' },
+      (err, response) => {
+        if (err) { dest.destroy(); return reject(err); }
+        response.data
+          .on('error', reject)
+          .pipe(dest)
+          .on('finish', resolve)
+          .on('error', reject);
+      }
+    );
   });
 }
 
+// ─── Extract audio with FFmpeg ────────────────────────────────────────────────
 async function extractAudio(videoPath, audioPath) {
   return new Promise((resolve, reject) => {
     try {
       const command = `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -ac 1 -ar 16000 -b:a 32k "${audioPath}" -y`;
       execSync(command, { stdio: 'pipe', timeout: 600000 });
       resolve();
-    } catch (error) { reject(new Error(`FFmpeg error: ${error.message}`)); }
+    } catch (error) {
+      reject(new Error(`FFmpeg error: ${error.message}`));
+    }
   });
 }
 
+// ─── AssemblyAI transcription ─────────────────────────────────────────────────
 async function transcribeWithAssemblyAI(audioPath) {
   const headers = { 'authorization': CONFIG.ASSEMBLYAI_API_KEY };
+
   console.log('Uploading audio to AssemblyAI...');
   const audioData = fs.readFileSync(audioPath);
   const uploadRes = await axios.post('https://api.assemblyai.com/v2/upload', audioData, {
     headers: { ...headers, 'content-type': 'application/octet-stream' },
     timeout: 600000, maxBodyLength: Infinity
   });
-  console.log('Submitting transcription job...');
+
+  console.log('Submitting transcription job with speaker diarization...');
   const submitRes = await axios.post('https://api.assemblyai.com/v2/transcript', {
     audio_url: uploadRes.data.upload_url,
     speaker_labels: true
   }, { headers });
+
   const transcriptId = submitRes.data.id;
-  console.log(`Polling ${transcriptId}...`);
+  console.log(`Polling transcript ${transcriptId}...`);
+
   for (let i = 0; i < 240; i++) {
     await new Promise(r => setTimeout(r, 5000));
     const poll = await axios.get(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, { headers });
     const { status } = poll.data;
-    if (status === 'completed') return formatTranscript(poll.data);
+    console.log(`Status: ${status}`);
+    if (status === 'completed') {
+      const title = await generateTitle(poll.data.utterances || []);
+      return buildOutput(poll.data, { title, speakerNames: {} });
+    }
     if (status === 'error') throw new Error(`AssemblyAI error: ${poll.data.error}`);
   }
   throw new Error('Transcription timed out after 20 minutes');
 }
 
-function formatTranscript(data) {
-  if (!data.utterances || data.utterances.length === 0) {
-    return [{ speaker: 'Speaker 1', text: data.text }];
+async function generateTitle(utterances) {
+  if (!CONFIG.OPENAI_API_KEY) return '';
+  try {
+    const sample = utterances.slice(0, 20).map(u => `Speaker ${u.speaker}: ${u.text}`).join('\n');
+    const res = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: `Generate a short descriptive title for this conversation capturing who is speaking and the main topic (e.g. "Sarah on why she founded SafetyWing"). Respond with ONLY the title, no quotes.\n\n${sample}` }],
+      max_tokens: 30
+    }, { headers: { 'Authorization': `Bearer ${CONFIG.OPENAI_API_KEY}` }, timeout: 30000 });
+    const title = res.data.choices[0].message.content.trim();
+    console.log(`Generated title: "${title}"`);
+    return title;
+  } catch (e) {
+    console.log('Title generation skipped:', e.response?.data?.error?.message || e.message);
+    return '';
   }
-  const speakerMap = {};
-  let count = 1;
-  return data.utterances.map(u => {
-    if (!speakerMap[u.speaker]) speakerMap[u.speaker] = `Speaker ${count++}`;
-    return { speaker: speakerMap[u.speaker], text: u.text, start_ms: u.start, end_ms: u.end };
-  });
 }
 
-async function saveTranscriptToDrive(authClient, transcript, fileName) {
+function detectNamesFromText(utterances) {
+  const found = {};
+  const patterns = [
+    /\bI'?m\s+([A-Z][a-záéíóúñ]+)\b/,
+    /\bmy name is\s+([A-Z][a-záéíóúñ]+)\b/i,
+    /\bI am\s+([A-Z][a-záéíóúñ]+)\b/,
+    /\bthis is\s+([A-Z][a-záéíóúñ]+)\b/i,
+    /\bcall me\s+([A-Z][a-záéíóúñ]+)\b/i,
+  ];
+  for (const u of utterances.slice(0, 30)) {
+    if (found[u.speaker]) continue;
+    for (const p of patterns) {
+      const m = u.text.match(p);
+      if (m?.[1]) { found[u.speaker] = m[1]; break; }
+    }
+  }
+  return found;
+}
+
+function buildOutput(data, { title, speakerNames }) {
+  if (!data.utterances || data.utterances.length === 0) {
+    return { title, speakers: {}, transcript: [{ speaker: 'Speaker 1', text: data.text }] };
+  }
+  const regexNames = detectNamesFromText(data.utterances);
+  const mergedNames = { ...regexNames, ...speakerNames };
+  console.log('Merged speaker names:', mergedNames);
+
+  const labelMap = {};
+  let count = 1;
+  const transcript = data.utterances.map(u => {
+    if (!labelMap[u.speaker]) {
+      labelMap[u.speaker] = mergedNames[u.speaker] || `Speaker ${count++}`;
+    }
+    return { speaker: labelMap[u.speaker], text: u.text, start_ms: u.start, end_ms: u.end };
+  });
+
+  return { title, speakers: labelMap, transcript };
+}
+
+// ─── Save transcript to Drive ─────────────────────────────────────────────────
+// Service account mode: saves to TRANSCRIPT_OUTPUT_FOLDER_ID env var.
+// OAuth mode: saves to "SafetyWing Transcripts" folder in the user's My Drive.
+async function saveTranscriptToDrive(authClient, transcriptData, fileName) {
+  const outputFolderId = process.env.TRANSCRIPT_OUTPUT_FOLDER_ID;
+
+  if (serviceAccountAuth && outputFolderId) {
+    // Service account — save directly to the configured output folder
+    const uploadResponse = await drive.files.create({
+      auth: authClient,
+      resource: { name: fileName, mimeType: 'application/json', parents: [outputFolderId] },
+      media: { mimeType: 'application/json', body: JSON.stringify(transcriptData, null, 2) },
+      fields: 'id'
+    });
+    return uploadResponse.data.id;
+  }
+
+  // OAuth fallback — save to "SafetyWing Transcripts" in user's My Drive
   try {
     let transcriptsFolderId = await getMyDriveFolderByName(authClient, 'SafetyWing Transcripts');
     if (!transcriptsFolderId) {
-      const r = await drive.files.create({
+      console.log('Creating SafetyWing Transcripts folder in My Drive...');
+      const createResponse = await drive.files.create({
         auth: authClient,
         resource: { name: 'SafetyWing Transcripts', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] },
         fields: 'id'
       });
-      transcriptsFolderId = r.data.id;
+      transcriptsFolderId = createResponse.data.id;
     }
-    await drive.files.create({
+    const uploadResponse = await drive.files.create({
       auth: authClient,
       resource: { name: fileName, mimeType: 'application/json', parents: [transcriptsFolderId] },
-      media: { mimeType: 'application/json', body: JSON.stringify(transcript, null, 2) },
+      media: { mimeType: 'application/json', body: JSON.stringify(transcriptData, null, 2) },
       fields: 'id'
     });
+    return uploadResponse.data.id;
   } catch (error) {
     throw new Error(`Failed to save transcript to Drive: ${error.message}`);
   }
@@ -203,25 +390,53 @@ async function getMyDriveFolderByName(authClient, folderName) {
   const response = await drive.files.list({
     auth: authClient,
     q: `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false`,
-    spaces: 'drive', pageSize: 1, fields: 'files(id,name)'
+    spaces: 'drive',
+    pageSize: 1,
+    fields: 'files(id,name)'
   });
   return response.data.files?.[0]?.id;
 }
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// ─── Debug endpoint ───────────────────────────────────────────────────────────
+app.get('/api/debug', verifyGoogleToken, async (req, res) => {
+  try {
+    const authClient = await getAuthClient(req);
+    const response = await drive.files.list({
+      auth: authClient,
+      q: `'${CONFIG.DRIVE_FOLDER_ID}' in parents and trashed=false`,
+      spaces: 'drive',
+      pageSize: 50,
+      fields: 'files(id,name,mimeType)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+    res.json({ folderId: CONFIG.DRIVE_FOLDER_ID, files: response.data.files });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
+// ─── Health check ─────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    auth: serviceAccountAuth ? 'service-account' : 'oauth-token'
+  });
+});
+
+// ─── Error handler ────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ error: err.message });
 });
 
-const server = app.listen(CONFIG.PORT, () => {
-  console.log(`SafetyWing Transcription Server running on port ${CONFIG.PORT}`);
+// ─── Start server ─────────────────────────────────────────────────────────────
+const PORT = CONFIG.PORT;
+const server = app.listen(PORT, () => {
+  console.log(`SafetyWing Transcription Server running on port ${PORT}`);
 });
 
-// Graceful shutdown so Render can release the port before the next deploy starts
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   server.close(() => {
@@ -229,3 +444,5 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
+
+module.exports = app;
