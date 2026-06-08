@@ -452,24 +452,36 @@ app.post('/api/search', async (req, res) => {
     const embedding = embedRes.data.data[0].embedding;
 
     // 2. Map platform to duration range
+    // Minimum of 20s on all platforms — excludes short interviewer-question-only chunks
+    // and ensures results include the actual answer, not just the prompt.
     const durations = {
-      tiktok:   { min: 10000,  max: 60000  },
-      reels:    { min: 10000,  max: 60000  },
+      tiktok:   { min: 20000,  max: 60000  },
+      reels:    { min: 20000,  max: 60000  },
       linkedin: { min: 20000,  max: 90000  },
-      all:      { min: null,   max: null   }
+      all:      { min: 20000,  max: null   }
     };
     const { min, max } = durations[platform] || durations.all;
 
     // 3. Vector search via Supabase RPC
-    const { data, error } = await supabase.rpc('search_clips', {
-      query_embedding: embedding,
-      min_duration_ms: min,
-      max_duration_ms: max,
-      filter_speaker:  speaker || null,
-      match_count: 6
-    });
+    // We exclude 'segment' type chunks (raw speaker turns) — they can be as short as
+    // 2–3 seconds (e.g. just the interviewer's question). Instead we use the sliding
+    // window chunks (30s/60s/90s) which naturally span question + answer together.
+    const searchParams = {
+      query_embedding:   embedding,
+      min_duration_ms:   min,
+      max_duration_ms:   max,
+      filter_speaker:    speaker || null,
+      match_count:       10
+    };
+
+    const { data: rawData, error } = await supabase.rpc('search_clips', searchParams);
 
     if (error) throw new Error(error.message);
+
+    // Filter out pure 'segment' chunks — keep only window chunks (30s/60s/90s)
+    // unless NO window chunks exist (fallback to segments so we always return something)
+    const windowChunks = (rawData || []).filter(r => r.chunk_type !== 'segment');
+    const data = windowChunks.length > 0 ? windowChunks : (rawData || []);
 
     // 4. Fetch video titles for results
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
