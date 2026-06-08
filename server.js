@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
 const { google } = require('googleapis');
+const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -12,6 +13,7 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 const CONFIG = {
@@ -28,6 +30,13 @@ if (!fs.existsSync(CONFIG.TEMP_DIR)) {
 
 // ─── Google Drive client ──────────────────────────────────────────────────────
 const drive = google.drive('v3');
+
+// ─── Supabase client ──────────────────────────────────────────────────────────
+let supabase = null;
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+  console.log('✓ Supabase client initialized');
+}
 
 // ─── Service account auth (preferred — no token expiry) ───────────────────────
 // Set GOOGLE_SERVICE_ACCOUNT_JSON in Render env vars to enable this.
@@ -415,6 +424,83 @@ app.get('/api/debug', verifyGoogleToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ─── Search endpoint ──────────────────────────────────────────────────────────
+// POST /api/search
+// Body: { query: string, platform: 'tiktok'|'reels'|'linkedin'|'all', speaker?: string }
+app.post('/api/search', async (req, res) => {
+  const { query, platform = 'all', speaker = null } = req.body;
+  if (!query || !query.trim()) {
+    return res.status(400).json({ error: 'query is required' });
+  }
+  if (!supabase) {
+    return res.status(503).json({ error: 'Search not available — Supabase not configured' });
+  }
+  if (!CONFIG.OPENAI_API_KEY) {
+    return res.status(503).json({ error: 'Search not available — OpenAI key not configured' });
+  }
+
+  try {
+    // 1. Generate embedding for the query
+    const embedRes = await axios.post('https://api.openai.com/v1/embeddings', {
+      model: 'text-embedding-3-small',
+      input: query.trim()
+    }, {
+      headers: { 'Authorization': `Bearer ${CONFIG.OPENAI_API_KEY}` },
+      timeout: 15000
+    });
+    const embedding = embedRes.data.data[0].embedding;
+
+    // 2. Map platform to duration range
+    const durations = {
+      tiktok:   { min: 10000,  max: 60000  },
+      reels:    { min: 10000,  max: 60000  },
+      linkedin: { min: 20000,  max: 90000  },
+      all:      { min: null,   max: null   }
+    };
+    const { min, max } = durations[platform] || durations.all;
+
+    // 3. Vector search via Supabase RPC
+    const { data, error } = await supabase.rpc('search_clips', {
+      query_embedding: embedding,
+      min_duration_ms: min,
+      max_duration_ms: max,
+      filter_speaker:  speaker || null,
+      match_count: 6
+    });
+
+    if (error) throw new Error(error.message);
+
+    // 4. Format results
+    const results = (data || []).map(r => ({
+      id:           r.id,
+      video_id:     r.video_id,
+      speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
+      text:         r.text,
+      start_ms:     r.start_ms,
+      end_ms:       r.end_ms,
+      duration_ms:  r.duration_ms,
+      chunk_type:   r.chunk_type,
+      similarity:   Math.round(r.similarity * 100),
+      start_fmt:    msToTimestamp(r.start_ms),
+      end_fmt:      msToTimestamp(r.end_ms),
+    }));
+
+    res.json({ results });
+  } catch (err) {
+    console.error('Search error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function msToTimestamp(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
