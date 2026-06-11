@@ -89,19 +89,35 @@ function resolveSpeakerName(mappings, videoId, speakerLabel) {
 
 // ─── Google Drive helpers ────────────────────────────────────────────────────
 
-async function listTranscriptFiles(drive, folderId) {
+/**
+ * Recursively list all .json files in a Drive folder and its subfolders.
+ * This handles structures like Day 1/, Day 2/, etc.
+ */
+async function listTranscriptFiles(drive, folderId, _folderName) {
   const files = [];
   let pageToken = null;
+
   do {
     const res = await drive.files.list({
-      q: `'${folderId}' in parents and mimeType = 'application/json' and trashed = false`,
-      fields: 'nextPageToken, files(id, name)',
-      pageSize: 100,
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: 'nextPageToken, files(id, name, mimeType)',
+      pageSize: 200,
       pageToken: pageToken || undefined,
     });
-    files.push(...res.data.files);
+
+    for (const file of res.data.files) {
+      if (file.mimeType === 'application/vnd.google-apps.folder') {
+        // Recurse into subfolder
+        console.log(`  📁 Scanning subfolder: ${file.name}`);
+        const sub = await listTranscriptFiles(drive, file.id, file.name);
+        files.push(...sub);
+      } else if (file.name.endsWith('.json')) {
+        files.push(file);
+      }
+    }
     pageToken = res.data.nextPageToken;
   } while (pageToken);
+
   return files;
 }
 
