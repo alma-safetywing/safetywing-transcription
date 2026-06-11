@@ -269,6 +269,38 @@
     }
     .drive-btn:hover { border-color: #1a73e8; color: #1a73e8; }
 
+    /* ── Transcript context panel ── */
+    .transcript-ctx {
+      display: none;
+      margin: 4px 0 10px;
+      border-left: 3px solid #e0e0e0;
+      padding: 6px 0 2px 12px;
+    }
+    .ctx-turn {
+      display: flex;
+      gap: 8px;
+      padding: 3px 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .ctx-turn.ctx-match {
+      background: #f5f0ff;
+      border-radius: 4px;
+      padding: 4px 8px;
+      margin: 2px -8px;
+      border-left: 3px solid #6c47ff;
+    }
+    .ctx-speaker {
+      font-weight: 600;
+      color: #6c47ff;
+      white-space: nowrap;
+      min-width: 80px;
+      flex-shrink: 0;
+    }
+    .ctx-turn.ctx-match .ctx-speaker { color: #5030d0; }
+    .ctx-text { color: #333; }
+    .ctx-loading { color: #aaa; font-size: 12px; font-style: italic; }
+
     /* ── Loading spinner ── */
     .spinner {
       display: none;
@@ -403,10 +435,8 @@
     header.textContent   = `${results.length} clips found for "${query}"`;
 
     container.innerHTML = results.map((r, i) => {
-      const fullText = esc(r.text);
-      const driveLink = r.drive_file_id
-        ? `https://drive.google.com/file/d/${r.drive_file_id}/view`
-        : `https://drive.google.com/drive/search?q=${encodeURIComponent(r.video_id)}`;
+      const fullText  = esc(r.text);
+      const driveLink = `https://drive.google.com/drive/search?q=${encodeURIComponent(r.video_title || r.video_id)}`;
       return `
       <div class="card">
         <div class="card-top">
@@ -419,8 +449,12 @@
             <span class="badge badge-score">${r.similarity}% match</span>
           </div>
         </div>
-        <p class="quote" id="quote-${i}" data-full="${fullText}">"${fullText}"</p>
-        <button class="expand-btn" id="expand-${i}" onclick="toggleExpand(${i})">Show full transcript ↓</button>
+        <p class="quote" id="quote-${i}">"${fullText}"</p>
+        <button class="expand-btn" id="expand-${i}"
+          onclick="toggleExpand(${i}, '${esc(r.video_id)}', ${r.start_ms}, ${r.end_ms})">
+          Show full transcript ↓
+        </button>
+        <div class="transcript-ctx" id="ctx-${i}"></div>
         <div class="card-bottom">
           <div class="timestamps">
             <span class="ts">${esc(r.start_fmt)}</span>
@@ -438,11 +472,43 @@
     }).join('');
   }
 
-  function toggleExpand(i) {
-    const quote = document.getElementById(`quote-${i}`);
-    const btn   = document.getElementById(`expand-${i}`);
-    const expanded = quote.classList.toggle('expanded');
-    btn.textContent = expanded ? 'Show less ↑' : 'Show full transcript ↓';
+  async function toggleExpand(i, videoId, startMs, endMs) {
+    const btn = document.getElementById(`expand-${i}`);
+    const ctx = document.getElementById(`ctx-${i}`);
+    const isOpen = ctx.style.display === 'block';
+
+    if (isOpen) {
+      ctx.style.display = 'none';
+      btn.textContent = 'Show full transcript ↓';
+      return;
+    }
+
+    btn.textContent = 'Show less ↑';
+    ctx.style.display = 'block';
+
+    if (ctx.dataset.loaded) return; // already fetched
+
+    ctx.innerHTML = '<span class="ctx-loading">Loading transcript…</span>';
+    try {
+      const res  = await fetch(`/api/context?video_id=${encodeURIComponent(videoId)}&start_ms=${startMs}&end_ms=${endMs}`);
+      const data = await res.json();
+      const segs = data.segments || [];
+      if (!segs.length) {
+        ctx.innerHTML = '<span class="ctx-loading">No transcript segments available.</span>';
+        ctx.dataset.loaded = '1';
+        return;
+      }
+      ctx.innerHTML = segs.map(s => {
+        const inClip = s.start_ms >= startMs && s.end_ms <= endMs;
+        return `<div class="ctx-turn${inClip ? ' ctx-match' : ''}">
+          <span class="ctx-speaker">${esc(s.speaker)}</span>
+          <span class="ctx-text">${esc(s.text)}</span>
+        </div>`;
+      }).join('');
+      ctx.dataset.loaded = '1';
+    } catch (e) {
+      ctx.innerHTML = '<span class="ctx-loading">Could not load transcript.</span>';
+    }
   }
 
   function copyTimestamps(btn, videoId, start, end) {

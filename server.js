@@ -466,6 +466,7 @@ app.post('/api/search', async (req, res) => {
     // We exclude 'segment' type chunks (raw speaker turns) — they can be as short as
     // 2–3 seconds (e.g. just the interviewer's question). Instead we use the sliding
     // window chunks (30s/60s/90s) which naturally span question + answer together.
+    // Run two searches and merge: one per useful window size, then deduplicate by video+time.
     const searchParams = {
       query_embedding:   embedding,
       min_duration_ms:   min,
@@ -474,6 +475,7 @@ app.post('/api/search', async (req, res) => {
       match_count:       25
     };
 
+    // Fetch results excluding segment-only chunks by fetching more and filtering client-side
     const { data: rawData, error } = await supabase.rpc('search_clips', searchParams);
 
     if (error) throw new Error(error.message);
@@ -483,7 +485,9 @@ app.post('/api/search', async (req, res) => {
     const windowChunks = (rawData || []).filter(r => r.chunk_type !== 'segment');
     const data = windowChunks.length > 0 ? windowChunks : (rawData || []);
 
-    // 4. Fetch video titles and Drive IDs for results
+    if (error) throw new Error(error.message);
+
+    // 4. Fetch video titles for results
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
     const { data: videoRows } = await supabase
       .from('videos')
@@ -492,25 +496,35 @@ app.post('/api/search', async (req, res) => {
     const videoMap = Object.fromEntries((videoRows || []).map(v => [v.id, v]));
 
     // 5. Format results
-    const results = (data || []).map(r => {
+    const mapped = (data || []).map(r => {
       const video = videoMap[r.video_id] || {};
-      const driveFileId = video.drive_file_id || null;
       return {
-        id:            r.id,
-        video_id:      r.video_id,
-        video_title:   video.title || video.file_name || r.video_id,
-        speaker_name:  r.speaker_name || r.speaker_label || 'Unknown',
-        text:          r.text,
-        start_ms:      r.start_ms,
-        end_ms:        r.end_ms,
-        duration_ms:   r.duration_ms,
-        chunk_type:    r.chunk_type,
-        similarity:    Math.round(r.similarity * 100),
-        start_fmt:     msToTimestamp(r.start_ms),
-        end_fmt:       msToTimestamp(r.end_ms),
-        drive_file_id: driveFileId,
+        id:           r.id,
+        video_id:     r.video_id,
+        video_title:  video.title || video.file_name || r.video_id,
+        speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
+        text:         r.text,
+        start_ms:     r.start_ms,
+        end_ms:       r.end_ms,
+        duration_ms:  r.duration_ms,
+        chunk_type:   r.chunk_type,
+        similarity:   Math.round(r.similarity * 100),
+        start_fmt:    msToTimestamp(r.start_ms),
+        end_fmt:      msToTimestamp(r.end_ms),
       };
     });
+
+    // Deduplicate: same clip can match via different chunk windows
+    const seen = new Set();
+    const deduped = mapped.filter(r => {
+      const key = `${r.video_id}:${r.start_ms}:${r.end_ms}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Filter out Spanish/bilingual chunks (¿ and ¡ are reliable markers)
+    const results = deduped.filter(r => !r.text.includes('¿') && !r.text.includes('¡'));
 
     res.json({ results });
   } catch (err) {
@@ -531,6 +545,38 @@ function msToTimestamp(ms) {
 // Explicit root route — serves the search UI
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ─── Context endpoint ─────────────────────────────────────────────────────────
+// GET /api/context?video_id=...&start_ms=...&end_ms=...
+// Returns the individual speaker-turn segments surrounding a matched clip
+app.get('/api/context', async (req, res) => {
+  const { video_id, start_ms, end_ms } = req.query;
+  if (!video_id || start_ms === undefined || end_ms === undefined) {
+    return res.status(400).json({ error: 'video_id, start_ms, end_ms required' });
+  }
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+
+  const s   = parseInt(start_ms);
+  const e   = parseInt(end_ms);
+  const pad = 90000; // show up to 90s before/after the clip
+
+  const { data, error } = await supabase
+    .from('transcript_chunks')
+    .select('id, speaker_name, speaker_label, text, start_ms, end_ms, chunk_type')
+    .eq('video_id', video_id)
+    .eq('chunk_type', 'segment')
+    .gte('start_ms', s - pad)
+    .lte('end_ms', e + pad)
+    .order('start_ms', { ascending: true });
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ segments: (data || []).map(seg => ({
+    speaker: seg.speaker_name || seg.speaker_label || 'Speaker',
+    text:    seg.text,
+    start_ms: seg.start_ms,
+    end_ms:   seg.end_ms,
+  }))});
 });
 
 // ─── Health check ─────────────────────────────────────────────────────────────
