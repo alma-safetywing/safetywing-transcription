@@ -471,7 +471,7 @@ app.post('/api/search', async (req, res) => {
       min_duration_ms:   min,
       max_duration_ms:   max,
       filter_speaker:    speaker || null,
-      match_count:       10
+      match_count:       25
     };
 
     const { data: rawData, error } = await supabase.rpc('search_clips', searchParams);
@@ -483,30 +483,32 @@ app.post('/api/search', async (req, res) => {
     const windowChunks = (rawData || []).filter(r => r.chunk_type !== 'segment');
     const data = windowChunks.length > 0 ? windowChunks : (rawData || []);
 
-    // 4. Fetch video titles for results
+    // 4. Fetch video titles and Drive IDs for results
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
     const { data: videoRows } = await supabase
       .from('videos')
-      .select('id, title, file_name')
+      .select('id, title, file_name, drive_file_id')
       .in('id', videoIds);
     const videoMap = Object.fromEntries((videoRows || []).map(v => [v.id, v]));
 
     // 5. Format results
     const results = (data || []).map(r => {
       const video = videoMap[r.video_id] || {};
+      const driveFileId = video.drive_file_id || null;
       return {
-        id:           r.id,
-        video_id:     r.video_id,
-        video_title:  video.title || video.file_name || r.video_id,
-        speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
-        text:         r.text,
-        start_ms:     r.start_ms,
-        end_ms:       r.end_ms,
-        duration_ms:  r.duration_ms,
-        chunk_type:   r.chunk_type,
-        similarity:   Math.round(r.similarity * 100),
-        start_fmt:    msToTimestamp(r.start_ms),
-        end_fmt:      msToTimestamp(r.end_ms),
+        id:            r.id,
+        video_id:      r.video_id,
+        video_title:   video.title || video.file_name || r.video_id,
+        speaker_name:  r.speaker_name || r.speaker_label || 'Unknown',
+        text:          r.text,
+        start_ms:      r.start_ms,
+        end_ms:        r.end_ms,
+        duration_ms:   r.duration_ms,
+        chunk_type:    r.chunk_type,
+        similarity:    Math.round(r.similarity * 100),
+        start_fmt:     msToTimestamp(r.start_ms),
+        end_fmt:       msToTimestamp(r.end_ms),
+        drive_file_id: driveFileId,
       };
     });
 
