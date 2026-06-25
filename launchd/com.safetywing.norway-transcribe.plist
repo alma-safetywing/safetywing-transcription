@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.safetywing.norway-transcribe</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/almaandino/Claude/Projects/Flight Week content engine/scripts/run_norway_cron.sh</string>
+    </array>
+
+    <!-- Runs every 30 minutes, all day. Idle runs (no new videos) are cheap,
+         just a Drive listing plus a Supabase query, so there's no real cost
+         to checking this often. Change to a larger number of seconds if you'd
+         rather check less frequently (e.g. 3600 = hourly). -->
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <!-- Also run once immediately when the job is loaded, so you get instant
+         confirmation it's wired up correctly instead of waiting 30 min. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/almaandino/Claude/Projects/Flight Week content engine/logs/norway_cron.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/almaandino/Claude/Projects/Flight Week content engine/logs/norway_cron.log</string>
+</dict>
+</plist>
