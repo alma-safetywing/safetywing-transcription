@@ -143,7 +143,11 @@ async function getOrCreateFolder(drive, name, parentId) {
 
 // ─── Video scanning ───────────────────────────────────────────────────────────
 
-async function listAllVideos(drive, folderId, folderPath) {
+// `skipped` is an optional array the caller can pass in to collect every
+// non-folder file that did NOT match VIDEO_EXTS, so nothing silently
+// vanishes from the scan with no trace. (Previously these were just dropped
+// with zero log output -- the cause of an 11-video gap going unnoticed.)
+async function listAllVideos(drive, folderId, folderPath, skipped) {
   const results = [];
   let pageToken = null;
   do {
@@ -158,9 +162,11 @@ async function listAllVideos(drive, folderId, folderPath) {
     for (const file of res.data.files) {
       if (file.mimeType === 'application/vnd.google-apps.folder') {
         const sub = folderPath ? `${folderPath}/${file.name}` : file.name;
-        results.push(...await listAllVideos(drive, file.id, sub));
+        results.push(...await listAllVideos(drive, file.id, sub, skipped));
       } else if (VIDEO_EXTS.has(path.extname(file.name).toLowerCase())) {
         results.push({ ...file, folderPath: folderPath || '' });
+      } else if (skipped) {
+        skipped.push({ name: file.name, mimeType: file.mimeType, folderPath: folderPath || '' });
       }
     }
     pageToken = res.data.nextPageToken;
@@ -412,17 +418,68 @@ async function renameVideoInPlace(drive, fileId, newName, originalExt) {
 
 // ─── Chunking ─────────────────────────────────────────────────────────────────
 
+// text-embedding-3-small's hard limit is 8192 tokens. AssemblyAI normally
+// breaks speech into many short utterances, so per-segment chunks are tiny --
+// but every so often (single continuous speaker, no detected pauses) it
+// returns ONE utterance for an entire long recording, and that segment's
+// text alone can blow past 8192 tokens, which makes the whole video FAIL at
+// the embedding step with "400 Invalid 'input[0]': maximum input length is
+// 8192 tokens." (exactly what happened on the "Sarah discussing SafetyWings
+// remote work culture" video). ~4 chars/token for English is the rule of
+// thumb, so cap segment text well under that before it ever reaches OpenAI.
+const EMBED_MAX_CHARS = 20000; // ≈5000 tokens — safe margin under the 8192 limit
+
+// Splits long text on sentence boundaries (falls back to a hard cut if a
+// single "sentence" is itself too long) so no single chunk ever risks
+// tripping the embedding model's token limit.
+function splitTextForEmbedding(text, maxChars = EMBED_MAX_CHARS) {
+  if (text.length <= maxChars) return [text];
+  const sentences = text.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [text];
+  const pieces = [];
+  let current = '';
+  for (const sentence of sentences) {
+    if (sentence.length > maxChars) {
+      // A single "sentence" is itself too long (e.g. no punctuation at all) — hard-split it.
+      if (current) { pieces.push(current); current = ''; }
+      for (let i = 0; i < sentence.length; i += maxChars) pieces.push(sentence.slice(i, i + maxChars));
+      continue;
+    }
+    if ((current + sentence).length > maxChars) {
+      pieces.push(current);
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  }
+  if (current) pieces.push(current);
+  return pieces;
+}
+
 function buildChunks(segments) {
   const chunks = [];
   for (const seg of segments) {
     if (!seg.text?.trim()) continue;
-    chunks.push({
-      speaker_label: seg.speaker || null,
-      text: seg.text.trim(),
-      start_ms: seg.start_ms,
-      end_ms: seg.end_ms,
-      chunk_type: 'segment',
-    });
+    const text = seg.text.trim();
+    const pieces = splitTextForEmbedding(text);
+    if (pieces.length > 1) {
+      console.log(`  ⚠️  Segment text is ${text.length} chars (~${Math.ceil(text.length / 4)} tokens) — splitting into ${pieces.length} sub-chunks to stay under the embedding model's limit.`);
+    }
+    const totalDuration = (seg.end_ms ?? 0) - (seg.start_ms ?? 0);
+    let charOffset = 0;
+    for (const piece of pieces) {
+      // Interpolate start/end proportionally by character position so
+      // timestamp-jump in search still lands roughly in the right place.
+      const pieceStartMs = (seg.start_ms ?? 0) + Math.round((charOffset / text.length) * totalDuration);
+      charOffset += piece.length;
+      const pieceEndMs = (seg.start_ms ?? 0) + Math.round((charOffset / text.length) * totalDuration);
+      chunks.push({
+        speaker_label: seg.speaker || null,
+        text: piece.trim(),
+        start_ms: pieces.length > 1 ? pieceStartMs : seg.start_ms,
+        end_ms: pieces.length > 1 ? pieceEndMs : seg.end_ms,
+        chunk_type: 'segment',
+      });
+    }
   }
   for (const windowMs of CHUNK_TARGETS_MS) {
     const stepMs = windowMs / 2;
@@ -464,7 +521,17 @@ function majoritySpeaker(segments) {
 }
 
 async function addEmbeddings(openai, chunks) {
-  const results = [...chunks];
+  // Defensive backstop: buildChunks() should already keep every chunk under
+  // EMBED_MAX_CHARS, but truncate here too in case a chunk ever slips through
+  // (e.g. future chunking changes) so a single oversized chunk can never
+  // again take down the whole video's embedding step with a 400 error.
+  const results = chunks.map(c => {
+    if (c.text.length > EMBED_MAX_CHARS) {
+      console.log(`  ⚠️  Chunk still ${c.text.length} chars after splitting — hard-truncating before embedding (this shouldn't normally happen).`);
+      return { ...c, text: c.text.slice(0, EMBED_MAX_CHARS) };
+    }
+    return c;
+  });
   for (let i = 0; i < results.length; i += EMBED_BATCH_SIZE) {
     const batch = results.slice(i, i + EMBED_BATCH_SIZE);
     const res = await openai.embeddings.create({ model: EMBED_MODEL, input: batch.map(c => c.text) });
@@ -575,8 +642,13 @@ async function main() {
   }
 
   console.log('\n📂 Scanning proxies folder...');
-  const scanned = await listAllVideos(drive, PROXIES_FOLDER_ID, '');
+  const skippedFiles = [];
+  const scanned = await listAllVideos(drive, PROXIES_FOLDER_ID, '', skippedFiles);
   console.log(`   Found ${scanned.length} videos total.`);
+  if (skippedFiles.length) {
+    console.log(`   ⚠️  Skipped ${skippedFiles.length} non-video file(s) (extension not recognized) — these were NOT counted or processed:`);
+    for (const f of skippedFiles) console.log(`      - ${f.folderPath ? f.folderPath + '/' : ''}${f.name} (${f.mimeType})`);
+  }
 
   const scoped = CAM_FOLDER_FILTER ? scanned.filter(v => CAM_FOLDER_FILTER.test(v.folderPath)) : scanned;
   if (CAM_FOLDER_FILTER) console.log(`   Matching camera filter: ${scoped.length}`);
@@ -589,9 +661,17 @@ async function main() {
   const todo = unprocessed.slice(0, MAX_VIDEOS_PER_RUN);
   console.log(`   To process this run: ${todo.length} (of ${unprocessed.length} unprocessed total)\n`);
 
+  if (unprocessed.length > todo.length) {
+    console.log('🚨'.repeat(20));
+    console.log(`🚨 MAX_VIDEOS_PER_RUN cap (${MAX_VIDEOS_PER_RUN}) is smaller than the backlog.`);
+    console.log(`🚨 ${unprocessed.length - todo.length} video(s) will be LEFT UNPROCESSED after this run.`);
+    console.log('🚨 Run this script again (or raise MAX_VIDEOS_PER_RUN) until this warning disappears.');
+    console.log('🚨'.repeat(20) + '\n');
+  }
+
   if (todo.length === 0) {
     console.log('✅ Nothing new to process.');
-    return { processed: 0, failed: 0 };
+    return { processed: 0, failed: 0, stillRemaining: 0, skipped: skippedFiles.length };
   }
 
   let processed = 0, failed = 0;
@@ -705,9 +785,17 @@ async function main() {
     console.log('Failures (will retry automatically next run, since Supabase has no row for them):');
     failures.forEach(f => console.log(`  - ${f.name}: ${f.error}`));
   }
+  const stillRemaining = unprocessed.length - processed - failed;
+  if (stillRemaining > 0) {
+    console.log(`🚨 ${stillRemaining} video(s) from this folder are STILL UNPROCESSED. Run this script again.`);
+  } else if (skippedFiles.length) {
+    console.log(`ℹ️  Note: ${skippedFiles.length} file(s) in this folder were skipped for not matching a recognized video extension — see warning above.`);
+  } else {
+    console.log('✅ Everything in this folder has been processed.');
+  }
   console.log('═'.repeat(60));
 
-  return { processed, failed };
+  return { processed, failed, stillRemaining, skipped: skippedFiles.length };
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

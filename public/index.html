@@ -436,7 +436,16 @@
 
     container.innerHTML = results.map((r, i) => {
       const fullText  = esc(r.text);
+      // video_drive_link is only set when this video's Supabase row has a
+      // video_drive_id (the source video's Drive file ID) -- that's missing
+      // for a known batch of legacy rows ingested before that field existed
+      // (see scripts/match_legacy_videos.js). Until those are backfilled,
+      // fall back to a Drive search, but label it honestly instead of
+      // disguising it as a direct link -- the inconsistent click behavior
+      // was confusing precisely because both looked like the same button.
+      const hasDirectLink = !!r.video_drive_link;
       const driveLink = r.video_drive_link || `https://drive.google.com/drive/search?q=${encodeURIComponent(r.video_title || r.video_id)}`;
+      const driveBtnLabel = hasDirectLink ? '📁 Open in Drive' : '🔍 Search in Drive (no direct link yet)';
       return `
       <div class="card">
         <div class="card-top">
@@ -462,7 +471,7 @@
             <span class="ts">${esc(r.end_fmt)}</span>
           </div>
           <div class="card-actions">
-            <a class="drive-btn" href="${driveLink}" target="_blank" rel="noopener">📁 Open in Drive</a>
+            <a class="drive-btn" href="${driveLink}" target="_blank" rel="noopener" title="${hasDirectLink ? 'Opens the video file directly' : 'No source video ID on file for this clip — opens a Drive search instead'}">${driveBtnLabel}</a>
             <button class="copy-btn" onclick="copyTimestamps(this, '${esc(r.video_id)}', '${esc(r.start_fmt)}', '${esc(r.end_fmt)}')">
               Copy timestamps
             </button>
