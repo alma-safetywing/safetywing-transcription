@@ -521,17 +521,23 @@ app.post('/api/search', async (req, res) => {
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
     const { data: videoRows } = await supabase
       .from('videos')
-      .select('id, title, file_name, drive_file_id, video_drive_id, collection')
+      .select('id, title, file_name, drive_file_id, video_drive_id, color_corrected_drive_id, collection')
       .in('id', videoIds);
     const videoMap = Object.fromEntries((videoRows || []).map(v => [v.id, v]));
 
     // 5. Format results
     const mapped = (data || []).map(r => {
       const video = videoMap[r.video_id] || {};
-      // Direct video link if we have video_drive_id, otherwise fall back to title search
-      const driveLink = video.video_drive_id
-        ? `https://drive.google.com/file/d/${video.video_drive_id}/view`
-        : null;
+      // Prefer the color-corrected copy (SF Content Week Cam 1 footage run
+      // through color_correct_cam1.js) when one exists -- that script uploads
+      // the corrected file into SF Content Week 2026/Videos and records its
+      // Drive ID here. Otherwise fall back to the original/raw video_drive_id,
+      // or to a title search if neither is set.
+      const driveLink = video.color_corrected_drive_id
+        ? `https://drive.google.com/file/d/${video.color_corrected_drive_id}/view`
+        : video.video_drive_id
+          ? `https://drive.google.com/file/d/${video.video_drive_id}/view`
+          : null;
       // Direct link to the source transcript JSON file in Drive, if we have its file ID
       const transcriptLink = video.drive_file_id
         ? `https://drive.google.com/file/d/${video.drive_file_id}/view`
