@@ -495,21 +495,27 @@ app.post('/api/search', async (req, res) => {
       min_duration_ms:   min,
       max_duration_ms:   max,
       filter_speaker:    speaker || null,
-      match_count:       200,
+      match_count:       300,
       filter_collection: collection || null
     };
 
-    // Fetch results excluding segment-only chunks by fetching more and filtering client-side
     const { data: rawData, error } = await supabase.rpc('search_clips', searchParams);
 
     if (error) throw new Error(error.message);
 
-    // Filter out pure 'segment' chunks — keep only window chunks (30s/60s/90s)
-    // unless NO window chunks exist (fallback to segments so we always return something)
-    const windowChunks = (rawData || []).filter(r => r.chunk_type !== 'segment');
-    const data = windowChunks.length > 0 ? windowChunks : (rawData || []);
-
-    if (error) throw new Error(error.message);
+    // Drop only genuinely tiny fragments (e.g. a 2-3s interviewer question
+    // with no real content) rather than every 'segment'-type chunk wholesale.
+    // The previous logic dropped ALL 'segment' chunks the moment ANY 30s/60s/90s
+    // window chunk existed anywhere in the whole result batch (almost always
+    // true) — which silently erased long, single-turn answers that never got
+    // their own window chunk in the first place (a window is only built if its
+    // collected duration lands within ±50% of the 30s/60s/90s target — see
+    // buildChunks() in ingest_transcripts.js — so one long uninterrupted
+    // monologue, e.g. a multi-minute explainer answer, can end up with NO
+    // window chunk at all and was getting filtered out entirely, regardless
+    // of how relevant it was).
+    const MIN_USEFUL_MS = 6000;
+    const data = (rawData || []).filter(r => r.duration_ms >= MIN_USEFUL_MS);
 
     // 4. Fetch video titles for results
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
