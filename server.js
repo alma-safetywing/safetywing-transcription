@@ -532,12 +532,17 @@ app.post('/api/search', async (req, res) => {
       const driveLink = video.video_drive_id
         ? `https://drive.google.com/file/d/${video.video_drive_id}/view`
         : null;
+      // Direct link to the source transcript JSON file in Drive, if we have its file ID
+      const transcriptLink = video.drive_file_id
+        ? `https://drive.google.com/file/d/${video.drive_file_id}/view`
+        : null;
       return {
         id:           r.id,
         video_id:     r.video_id,
         video_title:  video.title || video.file_name || r.video_id,
         collection:   video.collection || null,
         video_drive_link: driveLink,
+        transcript_drive_link: transcriptLink,
         speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
         text:         r.text,
         start_ms:     r.start_ms,

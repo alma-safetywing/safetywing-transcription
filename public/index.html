@@ -501,7 +501,13 @@
       // was confusing precisely because both looked like the same button.
       const hasDirectLink = !!r.video_drive_link;
       const driveLink = r.video_drive_link || `https://drive.google.com/drive/search?q=${encodeURIComponent(r.video_title || r.video_id)}`;
-      const driveBtnLabel = hasDirectLink ? '📁 Open in Drive' : '🔍 Search in Drive (no direct link yet)';
+      const driveBtnLabel = hasDirectLink ? '🎬 Open video' : '🔍 Search for video (no direct link yet)';
+      // Link to the source transcript JSON file in Drive, if we have its file ID.
+      // No honest fallback to offer here (unlike the video search fallback above),
+      // so just omit the button entirely when there's no direct link.
+      const transcriptBtn = r.transcript_drive_link
+        ? `<a class="drive-btn" href="${r.transcript_drive_link}" target="_blank" rel="noopener" title="Opens the source transcript JSON file">📝 Open full transcript</a>`
+        : '';
       return `
       <div class="card">
         <div class="card-top">
@@ -529,6 +535,7 @@
           </div>
           <div class="card-actions">
             <a class="drive-btn" href="${driveLink}" target="_blank" rel="noopener" title="${hasDirectLink ? 'Opens the video file directly' : 'No source video ID on file for this clip — opens a Drive search instead'}">${driveBtnLabel}</a>
+            ${transcriptBtn}
             <button class="copy-btn" onclick="copyTimestamps(this, '${esc(r.video_id)}', '${esc(r.start_fmt)}', '${esc(r.end_fmt)}')">
               Copy timestamps
             </button>
