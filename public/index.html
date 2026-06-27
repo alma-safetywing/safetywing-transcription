@@ -506,7 +506,7 @@
       // No honest fallback to offer here (unlike the video search fallback above),
       // so just omit the button entirely when there's no direct link.
       const transcriptBtn = r.transcript_drive_link
-        ? `<a class="drive-btn" href="${r.transcript_drive_link}" target="_blank" rel="noopener" title="Opens the source transcript JSON file">📝 Open full transcript</a>`
+        ? `<a class="drive-btn" href="${r.transcript_drive_link}" target="_blank" rel="noopener" title="Opens the source transcript JSON file">📝 Open transcript</a>`
         : '';
       return `
       <div class="card">
@@ -524,7 +524,7 @@
         <p class="quote" id="quote-${i}">"${fullText}"</p>
         <button class="expand-btn" id="expand-${i}"
           onclick="toggleExpand(${i}, '${esc(r.video_id)}', ${r.start_ms}, ${r.end_ms})">
-          Show full transcript ↓
+          See full transcript ↓
         </button>
         <div class="transcript-ctx" id="ctx-${i}"></div>
         <div class="card-bottom">
@@ -552,7 +552,7 @@
 
     if (isOpen) {
       ctx.style.display = 'none';
-      btn.textContent = 'Show full transcript ↓';
+      btn.textContent = 'See full transcript ↓';
       return;
     }
 
