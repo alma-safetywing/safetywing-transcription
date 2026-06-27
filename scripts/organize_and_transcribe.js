@@ -258,22 +258,19 @@ async function generateTitle(utterances) {
 
 // ─── Speaker detection ────────────────────────────────────────────────────────
 
+// Name detection lives in scripts/lib/speaker_names.js — shared with every
+// other transcription entry point so a fix only has to be made once instead
+// of drifting out of sync across copy-pasted versions (which is what
+// happened: this file already excluded third-person intros like "this is
+// Sara", but process_new_videos.js and transcribe_videos.js still had the
+// old, buggier pattern set). The shared version also fixes a first-match-
+// wins bug where a single false positive (e.g. "I'm Head of People..."
+// capturing "Head") permanently locked out a real self-intro found later in
+// the same conversation, by scoring every candidate across the whole
+// transcript instead of stopping at the first hit.
+const { detectNamesFromUtterances } = require('./lib/speaker_names');
 function detectNamesFromText(utterances) {
-  const found = {};
-  const patterns = [
-    /\bI'?m\s+([A-Z][a-záéíóúñ]+)\b/,
-    /\bmy name is\s+([A-Z][a-záéíóúñ]+)\b/i,
-    /\bI am\s+([A-Z][a-záéíóúñ]+)\b/,
-    /\bthis is\s+([A-Z][a-záéíóúñ]+)\b/i,
-  ];
-  for (const u of (utterances || []).slice(0, 30)) {
-    if (found[u.speaker]) continue;
-    for (const p of patterns) {
-      const m = u.text.match(p);
-      if (m?.[1]) { found[u.speaker] = m[1]; break; }
-    }
-  }
-  return found;
+  return detectNamesFromUtterances(utterances);
 }
 
 function buildTranscript(aaiData, title, videoDriveId, sourceVideoName) {

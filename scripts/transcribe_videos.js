@@ -157,23 +157,15 @@ async function generateTitle(utterances) {
 
 // ─── Speaker name detection ───────────────────────────────────────────────────
 
+// Name detection lives in scripts/lib/speaker_names.js — shared with every
+// other transcription entry point. The old version here had a dangerous
+// third-person "this is X" pattern (mislabels whoever is being introduced
+// as the current speaker) and first-match-wins (one false positive
+// permanently locked out a real self-intro found later in the same
+// conversation).
+const { detectNamesFromUtterances } = require('./lib/speaker_names');
 function detectNamesFromText(utterances) {
-  const found = {};
-  const patterns = [
-    /\bI'?m\s+([A-Z][a-záéíóúñ]+)\b/,
-    /\bmy name is\s+([A-Z][a-záéíóúñ]+)\b/i,
-    /\bI am\s+([A-Z][a-záéíóúñ]+)\b/,
-    /\bthis is\s+([A-Z][a-záéíóúñ]+)\b/i,
-    /\bcall me\s+([A-Z][a-záéíóúñ]+)\b/i,
-  ];
-  for (const u of utterances.slice(0, 30)) {
-    if (found[u.speaker]) continue;
-    for (const p of patterns) {
-      const m = u.text.match(p);
-      if (m?.[1]) { found[u.speaker] = m[1]; break; }
-    }
-  }
-  return found;
+  return detectNamesFromUtterances(utterances);
 }
 
 function buildOutput(data, title) {
