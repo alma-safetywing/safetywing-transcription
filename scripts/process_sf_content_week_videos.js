@@ -45,6 +45,7 @@ process.env.PROXIES_FOLDER_ID      = '1Y8ZxO3Ck5a68FZq580ioGdpGQyXqx0Hn'; // SF 
 process.env.SHARED_DRIVE_FOLDER_ID = '1Zfc5A4Nb0aZS3rHIssL6WX2fmiN3_Miy'; // SF Content Week 2026
 process.env.COPY_VIDEO_TO_DRIVE    = 'false';
 process.env.RENAME_VIDEO_IN_PLACE  = 'true';
+process.env.COLLECTION             = 'SF Content Week 2026'; // tags rows so the search UI's folder filter can scope to just this event
 
 const { main } = require('./process_new_videos');
 

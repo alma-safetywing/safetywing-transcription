@@ -43,6 +43,15 @@ const { spawn, execSync } = require('child_process');
 
 const PROXIES_FOLDER_ID      = process.env.PROXIES_FOLDER_ID;
 const SHARED_DRIVE_FOLDER_ID = process.env.SHARED_DRIVE_FOLDER_ID;
+
+// Tags every video this run ingests with which parent folder/event it came
+// from (e.g. "Norway 2026", "SF Content Week 2026", "Webinars"), so the
+// search UI can filter results down to just one source instead of always
+// searching everything. Each wrapper script (process_norway_videos.js etc.)
+// sets this before requiring this file. Leave unset and rows are saved with
+// collection = null (searchable as normal, just won't show up under any
+// folder filter until backfilled).
+const COLLECTION = process.env.COLLECTION || null;
 const ASSEMBLYAI_API_KEY     = process.env.ASSEMBLYAI_API_KEY;
 const OPENAI_API_KEY         = process.env.OPENAI_API_KEY;
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.mts', '.m4v', '.mxf']);
@@ -75,6 +84,16 @@ const MIN_USABLE_AUDIO_BYTES = 4 * 1024; // below this is effectively silence/em
 // Optional regex (as a string) to scope which subfolder paths count, e.g. "\\bcam\\s*1\\b".
 // Leave unset to process every camera/folder found under PROXIES_FOLDER_ID.
 const CAM_FOLDER_FILTER = process.env.CAM_FOLDER_FILTER ? new RegExp(process.env.CAM_FOLDER_FILTER, 'i') : null;
+
+// Optional comma-separated list of source Drive file IDs to skip even though
+// they're not yet in Supabase. Used for legacy-folder backfills where a scan
+// turns up literal duplicate copies (e.g. "Copy of X.mp4") of footage that's
+// already been transcribed under a different file ID -- without this, those
+// duplicates would look "unprocessed" forever (dedup is by file ID, and a
+// duplicate has its own ID) and get transcribed a second time for no reason.
+const EXCLUDE_FILE_IDS = new Set(
+  (process.env.EXCLUDE_FILE_IDS || '').split(',').map(s => s.trim()).filter(Boolean)
+);
 
 // Optional local backup dir for transcript JSONs. Only useful for manual local runs —
 // on Render this is ephemeral and pointless, so leave LOCAL_BACKUP_DIR unset there.
@@ -143,6 +162,14 @@ async function getOrCreateFolder(drive, name, parentId) {
 
 // ─── Video scanning ───────────────────────────────────────────────────────────
 
+// Every parent folder (Norway 2026, SF Content Week 2026, Webinars, and any
+// future ones) now has a "Content for Socials" subfolder containing the
+// edited short clips actually uploaded to Instagram/LinkedIn/etc. Those are
+// finished, derivative output -- not new raw source footage -- and must never
+// be scanned as if they need their own transcript. Skip this subfolder
+// entirely wherever it's found, at any depth, under any parent.
+const EXCLUDED_FOLDER_NAME = /^content\s+for\s+socials?$/i;
+
 // `skipped` is an optional array the caller can pass in to collect every
 // non-folder file that did NOT match VIDEO_EXTS, so nothing silently
 // vanishes from the scan with no trace. (Previously these were just dropped
@@ -161,6 +188,10 @@ async function listAllVideos(drive, folderId, folderPath, skipped) {
     });
     for (const file of res.data.files) {
       if (file.mimeType === 'application/vnd.google-apps.folder') {
+        if (EXCLUDED_FOLDER_NAME.test(file.name.trim())) {
+          console.log(`   ⏭️  Skipping "${folderPath ? folderPath + '/' : ''}${file.name}" (Content for Socials — edited output, not source footage).`);
+          continue;
+        }
         const sub = folderPath ? `${folderPath}/${file.name}` : file.name;
         results.push(...await listAllVideos(drive, file.id, sub, skipped));
       } else if (VIDEO_EXTS.has(path.extname(file.name).toLowerCase())) {
@@ -569,6 +600,7 @@ async function upsertVideo(supabase, sourceFileId, fileName, segments, title, tr
     file_name: fileName,
     drive_file_id: transcriptDriveId,   // transcript JSON's Drive ID, if uploaded
     video_drive_id: sourceFileId,       // source video's Drive ID (for direct link)
+    collection: COLLECTION,             // parent folder/event, e.g. "Norway 2026" — set by the wrapper script
     total_duration_ms: totalDuration,
     speaker_count: speakerCount,
     title,
@@ -610,6 +642,7 @@ async function main() {
 
   console.log(`\n🚀 process_new_videos.js — ${new Date().toISOString()}`);
   console.log(`   Proxies folder: ${PROXIES_FOLDER_ID}`);
+  console.log(`   Collection:     ${COLLECTION || '(none set — rows will save with collection = null)'}`);
   console.log(`   Camera filter:  ${CAM_FOLDER_FILTER ? process.env.CAM_FOLDER_FILTER : '(none — all cameras)'}`);
   console.log(`   Max per run:    ${MAX_VIDEOS_PER_RUN}`);
   console.log(`   Time budget:    ${RUN_TIME_BUDGET_MS / 60000} min`);
@@ -657,7 +690,9 @@ async function main() {
   const processedIds = await getAlreadyProcessedIds(supabase);
   console.log(`   Already in Supabase: ${processedIds.size}`);
 
-  const unprocessed = scoped.filter(v => !processedIds.has(v.id));
+  const excludedCount = scoped.filter(v => !processedIds.has(v.id) && EXCLUDE_FILE_IDS.has(v.id)).length;
+  if (excludedCount) console.log(`   Excluding ${excludedCount} known-duplicate file(s) via EXCLUDE_FILE_IDS.`);
+  const unprocessed = scoped.filter(v => !processedIds.has(v.id) && !EXCLUDE_FILE_IDS.has(v.id));
   const todo = unprocessed.slice(0, MAX_VIDEOS_PER_RUN);
   console.log(`   To process this run: ${todo.length} (of ${unprocessed.length} unprocessed total)\n`);
 

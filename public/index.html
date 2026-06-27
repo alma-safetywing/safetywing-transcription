@@ -115,6 +115,28 @@
     }
     .speaker-filter input:focus { border-color: #6c47ff; }
 
+    /* Folder (collection) filter */
+    .folder-filter {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .folder-filter label { font-size: 13px; color: #888; }
+    .folder-filter select {
+      padding: 6px 12px;
+      font-size: 13px;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      outline: none;
+      background: #fff;
+      color: #333;
+      transition: border-color .15s;
+    }
+    .folder-filter select:focus { border-color: #6c47ff; }
+
+    .badge-folder { background: #eef6ff; color: #1a73e8; }
+
     /* ── Results ── */
     .results-wrap {
       max-width: 780px;
@@ -367,6 +389,13 @@
     <label for="speakerInput">Speaker (optional):</label>
     <input id="speakerInput" type="text" placeholder="e.g. Sondre Rasch" />
   </div>
+
+  <div class="folder-filter">
+    <label for="folderSelect">Folder (optional):</label>
+    <select id="folderSelect">
+      <option value="">All folders</option>
+    </select>
+  </div>
 </div>
 
 <div class="results-wrap">
@@ -393,9 +422,31 @@
     if (e.key === 'Enter') doSearch();
   });
 
+  // Populate the folder dropdown from /api/collections on load. Rows ingested
+  // before the collection column existed (most legacy content) won't appear
+  // under any folder until backfill_collection_tags.js has been run — "All
+  // folders" always still searches everything regardless.
+  async function loadCollections() {
+    try {
+      const res = await fetch('/api/collections');
+      const data = await res.json();
+      const select = document.getElementById('folderSelect');
+      (data.collections || []).forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.collection;
+        opt.textContent = `${c.collection} (${c.video_count})`;
+        select.appendChild(opt);
+      });
+    } catch (e) {
+      console.log('Could not load folder list:', e.message);
+    }
+  }
+  loadCollections();
+
   async function doSearch() {
-    const query   = document.getElementById('queryInput').value.trim();
-    const speaker = document.getElementById('speakerInput').value.trim() || null;
+    const query      = document.getElementById('queryInput').value.trim();
+    const speaker    = document.getElementById('speakerInput').value.trim() || null;
+    const collection = document.getElementById('folderSelect').value || null;
     if (!query) return;
 
     setLoading(true);
@@ -405,7 +456,7 @@
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, platform: selectedPlatform, speaker })
+        body: JSON.stringify({ query, platform: selectedPlatform, speaker, collection })
       });
       const data = await res.json();
 
@@ -454,6 +505,7 @@
             <span class="video-id">${esc(r.video_title || r.video_id)}</span>
           </div>
           <div class="badges">
+            ${r.collection ? `<span class="badge badge-folder">${esc(r.collection)}</span>` : ''}
             <span class="badge badge-duration">${formatDuration(r.duration_ms)}</span>
             <span class="badge badge-score">${r.similarity}% match</span>
           </div>

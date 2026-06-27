@@ -21,6 +21,8 @@ create table if not exists videos (
   id                text primary key,         -- e.g. "CODC3_0002_1"
   file_name         text not null,            -- original filename
   drive_file_id     text,                     -- Google Drive file ID of the transcript JSON
+  video_drive_id    text,                     -- Google Drive file ID of the source video
+  collection        text,                     -- parent folder/event, e.g. "Norway 2026", "SF Content Week 2026", "Webinars"
   total_duration_ms integer,                  -- full video length in ms
   speaker_count     integer,                  -- number of distinct speakers
   ingested_at       timestamptz default now(),
@@ -68,6 +70,10 @@ create index if not exists idx_chunks_duration
 create index if not exists idx_chunks_type
   on transcript_chunks(chunk_type);
 
+-- Fast filtering by parent-folder collection (Norway 2026, SF Content Week 2026, Webinars, ...)
+create index if not exists idx_videos_collection
+  on videos(collection);
+
 -- Vector index for semantic search (IVFFlat — good up to ~1M rows)
 -- Note: create this AFTER you have ingested at least a few hundred rows,
 -- otherwise Postgres can't pick the right number of lists.
@@ -90,7 +96,8 @@ create or replace function search_clips(
   max_duration_ms    integer default null,   -- e.g. 60000 for ≤60s clips
   filter_speaker     text    default null,   -- e.g. 'Sondre Rasch'
   filter_chunk_type  text    default null,   -- e.g. '30s'
-  match_count        integer default 5
+  match_count        integer default 5,
+  filter_collection  text    default null    -- e.g. 'Norway 2026'
 )
 returns table (
   id            uuid,
@@ -107,24 +114,26 @@ returns table (
 language sql stable
 as $$
   select
-    id,
-    video_id,
-    speaker_label,
-    speaker_name,
-    text,
-    start_ms,
-    end_ms,
-    duration_ms,
-    chunk_type,
-    1 - (embedding <=> query_embedding) as similarity
-  from transcript_chunks
+    c.id,
+    c.video_id,
+    c.speaker_label,
+    c.speaker_name,
+    c.text,
+    c.start_ms,
+    c.end_ms,
+    c.duration_ms,
+    c.chunk_type,
+    1 - (c.embedding <=> query_embedding) as similarity
+  from transcript_chunks c
+  left join videos v on v.id = c.video_id
   where
-    embedding is not null
-    and (min_duration_ms is null or duration_ms >= min_duration_ms)
-    and (max_duration_ms is null or duration_ms <= max_duration_ms)
-    and (filter_speaker   is null or speaker_name  ilike '%' || filter_speaker   || '%')
-    and (filter_chunk_type is null or chunk_type = filter_chunk_type)
-  order by embedding <=> query_embedding
+    c.embedding is not null
+    and (min_duration_ms is null or c.duration_ms >= min_duration_ms)
+    and (max_duration_ms is null or c.duration_ms <= max_duration_ms)
+    and (filter_speaker    is null or c.speaker_name ilike '%' || filter_speaker || '%')
+    and (filter_chunk_type is null or c.chunk_type = filter_chunk_type)
+    and (filter_collection is null or v.collection = filter_collection)
+  order by c.embedding <=> query_embedding
   limit match_count;
 $$;
 
@@ -144,3 +153,17 @@ where speaker_name is not null
   and speaker_name not ilike '%crew%'
 group by speaker_name
 order by video_count desc;
+
+
+-- ============================================================
+-- 7. Helper view: distinct collections (parent folders) across all videos.
+--    Powers the "Folder" filter dropdown in the search UI.
+-- ============================================================
+create or replace view collection_list as
+select
+  collection,
+  count(*) as video_count
+from videos
+where collection is not null
+group by collection
+order by collection;

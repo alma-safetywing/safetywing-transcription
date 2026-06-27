@@ -44,6 +44,7 @@ process.env.PROXIES_FOLDER_ID      = '1M1YdA7ILePOSq3gAe34D--GQhyLs-SD1'; // Web
 process.env.SHARED_DRIVE_FOLDER_ID = '19NPYGQjPbZUm4eccExqY6bSav-z1xb5o'; // Webinars
 process.env.COPY_VIDEO_TO_DRIVE    = 'false';
 process.env.RENAME_VIDEO_IN_PLACE  = 'true'; // proxies === output Videos folder, so rename in place instead of copying
+process.env.COLLECTION             = 'Webinars'; // tags rows so the search UI's folder filter can scope to just this event
 
 const { main } = require('./process_new_videos');
 

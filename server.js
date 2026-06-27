@@ -450,7 +450,7 @@ app.get('/api/debug', verifyGoogleToken, async (req, res) => {
 // POST /api/search
 // Body: { query: string, platform: 'tiktok'|'reels'|'linkedin'|'all', speaker?: string }
 app.post('/api/search', async (req, res) => {
-  const { query, platform = 'all', speaker = null } = req.body;
+  const { query, platform = 'all', speaker = null, collection = null } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: 'query is required' });
   }
@@ -493,7 +493,8 @@ app.post('/api/search', async (req, res) => {
       min_duration_ms:   min,
       max_duration_ms:   max,
       filter_speaker:    speaker || null,
-      match_count:       25
+      match_count:       25,
+      filter_collection: collection || null
     };
 
     // Fetch results excluding segment-only chunks by fetching more and filtering client-side
@@ -512,7 +513,7 @@ app.post('/api/search', async (req, res) => {
     const videoIds = [...new Set((data || []).map(r => r.video_id))];
     const { data: videoRows } = await supabase
       .from('videos')
-      .select('id, title, file_name, drive_file_id, video_drive_id')
+      .select('id, title, file_name, drive_file_id, video_drive_id, collection')
       .in('id', videoIds);
     const videoMap = Object.fromEntries((videoRows || []).map(v => [v.id, v]));
 
@@ -527,6 +528,7 @@ app.post('/api/search', async (req, res) => {
         id:           r.id,
         video_id:     r.video_id,
         video_title:  video.title || video.file_name || r.video_id,
+        collection:   video.collection || null,
         video_drive_link: driveLink,
         speaker_name: r.speaker_name || r.speaker_label || 'Unknown',
         text:         r.text,
@@ -557,6 +559,23 @@ app.post('/api/search', async (req, res) => {
     console.error('Search error:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── Collections (parent-folder) list endpoint ───────────────────────────────
+// GET /api/collections
+// Powers the "Folder" filter dropdown in the search UI — returns each distinct
+// collection tag (Norway 2026, SF Content Week 2026, Webinars, ...) plus how
+// many videos carry it, via the collection_list view (see schema.sql /
+// add_collection_column.sql). Rows ingested before the collection column
+// existed have collection = null and are excluded here by the view itself.
+app.get('/api/collections', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Supabase not configured' });
+  const { data, error } = await supabase
+    .from('collection_list')
+    .select('collection, video_count')
+    .order('collection');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ collections: data || [] });
 });
 
 function msToTimestamp(ms) {

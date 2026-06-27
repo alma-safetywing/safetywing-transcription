@@ -38,6 +38,7 @@ process.env.PROXIES_FOLDER_ID      = '1E9nAnRKL4XnpdykJD__WC17HvIo0szAO'; // Nor
 process.env.SHARED_DRIVE_FOLDER_ID = '1hNrhmERcmsA_WeDivPoI6G_OlZqUWiH4'; // Norway 2026
 process.env.COPY_VIDEO_TO_DRIVE    = 'false';
 process.env.RENAME_VIDEO_IN_PLACE  = 'true'; // proxies === output Videos folder, so rename in place instead of copying
+process.env.COLLECTION             = 'Norway 2026'; // tags rows so the search UI's folder filter can scope to just this event
 
 const { main } = require('./process_new_videos');
 
