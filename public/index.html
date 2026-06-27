@@ -135,7 +135,18 @@
     }
     .folder-filter select:focus { border-color: #6c47ff; }
 
-    .badge-folder { background: #eef6ff; color: #1a73e8; }
+    /* Folder badge colors -- each collection gets its own color so clips from
+       different events are visually distinguishable at a glance. Known
+       collections get a hand-picked color; anything new/unmapped falls back
+       to a stable hash-based pick from FOLDER_FALLBACK_COLORS below so it
+       still gets a consistent (if arbitrary) color without a code change. */
+    .badge-folder-norway   { background: #eef6ff; color: #1a73e8; }
+    .badge-folder-sf       { background: #f3e8ff; color: #7c3aed; }
+    .badge-folder-webinars { background: #e6f7f1; color: #0f9d68; }
+    .badge-folder-c1       { background: #fff4e5; color: #b76e00; }
+    .badge-folder-c2       { background: #fdeaea; color: #c62828; }
+    .badge-folder-c3       { background: #e8f0fe; color: #1967d2; }
+    .badge-folder-c4       { background: #fce4ec; color: #ad1457; }
 
     /* ── Results ── */
     .results-wrap {
@@ -427,6 +438,23 @@
     if (e.key === 'Enter') doSearch();
   });
 
+  // Maps a collection name to its badge color class (see CSS above). Known
+  // collections get a hand-picked color; anything new falls back to a
+  // stable hash so the same unmapped folder always renders the same color
+  // without needing a code change every time a new event is added.
+  const FOLDER_COLOR_MAP = {
+    'Norway 2026': 'badge-folder-norway',
+    'SF Content Week 2026': 'badge-folder-sf',
+    'Webinars': 'badge-folder-webinars',
+  };
+  const FOLDER_FALLBACK_COLORS = ['badge-folder-c1', 'badge-folder-c2', 'badge-folder-c3', 'badge-folder-c4'];
+  function folderColorClass(collection) {
+    if (FOLDER_COLOR_MAP[collection]) return FOLDER_COLOR_MAP[collection];
+    let hash = 0;
+    for (let i = 0; i < collection.length; i++) hash = (hash * 31 + collection.charCodeAt(i)) >>> 0;
+    return FOLDER_FALLBACK_COLORS[hash % FOLDER_FALLBACK_COLORS.length];
+  }
+
   // Populate the folder dropdown from /api/collections on load. Rows ingested
   // before the collection column existed (most legacy content) won't appear
   // under any folder until backfill_collection_tags.js has been run — "All
@@ -516,7 +544,7 @@
             <span class="video-id">${esc(r.video_title || r.video_id)}</span>
           </div>
           <div class="badges">
-            ${r.collection ? `<span class="badge badge-folder">${esc(r.collection)}</span>` : ''}
+            ${r.collection ? `<span class="badge ${folderColorClass(r.collection)}">${esc(r.collection)}</span>` : ''}
             <span class="badge badge-duration">${formatDuration(r.duration_ms)}</span>
             <span class="badge badge-score">${r.similarity}% match</span>
           </div>
