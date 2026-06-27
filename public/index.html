@@ -379,10 +379,11 @@
   </div>
 
   <div class="filters">
-    <span class="filter-label">Platform:</span>
-    <button class="chip active" data-platform="all"     onclick="setChip(this)">All lengths</button>
-    <button class="chip"        data-platform="tiktok"  onclick="setChip(this)">TikTok / Reels ≤60s</button>
-    <button class="chip"        data-platform="linkedin" onclick="setChip(this)">LinkedIn ≤90s</button>
+    <span class="filter-label">Length:</span>
+    <button class="chip active" data-length="all"    onclick="setChip(this)">All lengths</button>
+    <button class="chip"        data-length="short"  onclick="setChip(this)">Under 30s</button>
+    <button class="chip"        data-length="medium" onclick="setChip(this)">30–90s</button>
+    <button class="chip"        data-length="long"   onclick="setChip(this)">Over 90s</button>
   </div>
 
   <div class="speaker-filter">
@@ -410,12 +411,16 @@
 </div>
 
 <script>
-  let selectedPlatform = 'all';
+  let selectedLength = 'all';
 
   function setChip(el) {
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
     el.classList.add('active');
-    selectedPlatform = el.dataset.platform;
+    selectedLength = el.dataset.length;
+    // Re-run the search immediately if there's already a query in the box —
+    // previously this only updated the variable, so the chip looked like it
+    // did nothing until the next manual search.
+    if (document.getElementById('queryInput').value.trim()) doSearch();
   }
 
   document.getElementById('queryInput').addEventListener('keydown', e => {
@@ -456,7 +461,7 @@
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, platform: selectedPlatform, speaker, collection })
+        body: JSON.stringify({ query, length: selectedLength, speaker, collection })
       });
       const data = await res.json();
 

@@ -448,9 +448,9 @@ app.get('/api/debug', verifyGoogleToken, async (req, res) => {
 
 // ─── Search endpoint ──────────────────────────────────────────────────────────
 // POST /api/search
-// Body: { query: string, platform: 'tiktok'|'reels'|'linkedin'|'all', speaker?: string }
+// Body: { query: string, length: 'short'|'medium'|'long'|'all', speaker?: string }
 app.post('/api/search', async (req, res) => {
-  const { query, platform = 'all', speaker = null, collection = null } = req.body;
+  const { query, length = 'all', speaker = null, collection = null } = req.body;
   if (!query || !query.trim()) {
     return res.status(400).json({ error: 'query is required' });
   }
@@ -472,28 +472,30 @@ app.post('/api/search', async (req, res) => {
     });
     const embedding = embedRes.data.data[0].embedding;
 
-    // 2. Map platform to duration range
-    // Minimum of 20s on all platforms — excludes short interviewer-question-only chunks
-    // and ensures results include the actual answer, not just the prompt.
+    // 2. Map length bucket to a duration range. These are pure clip-length
+    // bands (not platform names) — "short" suits TikTok/Reels, "medium"
+    // suits LinkedIn, but the filter itself just constrains duration_ms.
     const durations = {
-      tiktok:   { min: 20000,  max: 60000  },
-      reels:    { min: 20000,  max: 60000  },
-      linkedin: { min: 20000,  max: 90000  },
-      all:      { min: 20000,  max: null   }
+      short:  { min: null,   max: 30000 },
+      medium: { min: 30000,  max: 90000 },
+      long:   { min: 90000,  max: null  },
+      all:    { min: null,   max: null  }
     };
-    const { min, max } = durations[platform] || durations.all;
+    const { min, max } = durations[length] || durations.all;
 
-    // 3. Vector search via Supabase RPC
-    // We exclude 'segment' type chunks (raw speaker turns) — they can be as short as
-    // 2–3 seconds (e.g. just the interviewer's question). Instead we use the sliding
-    // window chunks (30s/60s/90s) which naturally span question + answer together.
-    // Run two searches and merge: one per useful window size, then deduplicate by video+time.
+    // 3. Vector search via Supabase RPC.
+    // match_count is the number of *candidate* chunks pulled from the vector
+    // index before any post-filtering below (segment-chunk removal, dedup,
+    // language filter). It is intentionally generous (not a "max results
+    // shown" cap) so that real result counts reflect how many relevant clips
+    // actually exist for a topic, sorted by similarity, rather than an
+    // arbitrary ceiling that happened to survive the post-filtering steps.
     const searchParams = {
       query_embedding:   embedding,
       min_duration_ms:   min,
       max_duration_ms:   max,
       filter_speaker:    speaker || null,
-      match_count:       25,
+      match_count:       200,
       filter_collection: collection || null
     };
 
